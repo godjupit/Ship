@@ -34,6 +34,8 @@ BACKEND=tensorrt RUNS=3 bash benchmark_reference.sh
 
 `TRT_ENGINE` 默认 `weights/supership-544.engine`，须同时携带同名 `.json` 校验文件。运行时检查权重、引擎校验和、GPU、TensorRT 版本及输入形状；尾批补零至构建 batch，写出时仅保留真实图片。修改输入大小或 batch 后需重新构建。TensorRT 的数值结果可能与 PyTorch FP16 不同，必须另行评估 AP50。
 
+TensorRT 预设使用 `OPENCV_COPY_MODE=rgb`（需要 `requirements-fast.txt` 中的 OpenCV 4.11），直接解码 RGB 并缩放到 pinned 输入，省去独立的 BGR→RGB 转换。`GPU_BGR=1` 仍使用 BGR 输入。可用 `OPENCV_COPY_MODE=cvtcolor` 对照旧路径；200 张参考集三轮交错测试中位数从 0.23334 秒降至 0.21775 秒，输出逐字节一致。该对照不代表隐藏集性能。
+
 快速流水线额外依赖见 `requirements-fast.txt`，在现有 CUDA PyTorch 环境中安装。新增流水线测试使用 pytest；完整验证运行 `python -m pytest tests -q`，原有 unittest 测试仍可运行。
 
 历史推理结果保存在 `output/`，分析产物保存在 `analysis/`，不进入提交。544 组合改变了解码、分辨率和后处理工作量，精度与性能需一起评估；参考集结果不能保证隐藏集精度达标。

@@ -121,7 +121,7 @@ class Runtime:
             raise ValueError("unsupported image decoder")
         if self.reduction not in (1, 2, 4, 8) or (self.reduction != 1 and self.decoder != "opencv"):
             raise ValueError("JPEG_REDUCTION must be 1, 2, 4 or 8; reduction requires OpenCV")
-        if self.copy_mode not in ("strided", "cvtcolor", "direct"):
+        if self.copy_mode not in ("strided", "cvtcolor", "direct", "rgb"):
             raise ValueError("unsupported OPENCV_COPY_MODE")
         if self.eval_layers not in (0, 1, 2, 3):
             raise ValueError("DECODER_LAYERS must be 0 (checkpoint default), 1, 2 or 3")
@@ -279,18 +279,22 @@ class Runtime:
             return torch.frombuffer(bytearray(path.read_bytes()), dtype=torch.uint8)
         if self.decoder == "opencv":
             import cv2
+            copy_mode = getattr(self, "copy_mode", "strided")
+            gpu_bgr = getattr(self, "gpu_bgr", False)
+            direct_rgb = copy_mode == "rgb" and not gpu_bgr
             flag = {1: cv2.IMREAD_COLOR, 2: cv2.IMREAD_REDUCED_COLOR_2,
                     4: cv2.IMREAD_REDUCED_COLOR_4, 8: cv2.IMREAD_REDUCED_COLOR_8}[self.reduction]
+            if direct_rgb:
+                # Preserve reduced decoding while requesting RGB from the codec.
+                flag = (flag & ~cv2.IMREAD_COLOR) | cv2.IMREAD_COLOR_RGB
             image = cv2.imread(str(path), flag)
             if image is None:
                 raise ValueError(f"cannot decode image: {path}")
             h, w = image.shape[:2]
-            copy_mode = getattr(self, "copy_mode", "strided")
-            gpu_bgr = getattr(self, "gpu_bgr", False)
-            if copy_mode != "direct" and not gpu_bgr:
+            if copy_mode != "direct" and not gpu_bgr and not direct_rgb:
                 resized = (image if image.shape[:2] == destination.shape[:2] else
                            cv2.resize(image, (destination.shape[1], destination.shape[0]), interpolation=cv2.INTER_LINEAR))
-            if gpu_bgr:
+            if gpu_bgr or direct_rgb:
                 cv2.resize(image, (destination.shape[1], destination.shape[0]), dst=destination, interpolation=cv2.INTER_LINEAR)
             elif copy_mode == "direct":
                 # Reuse the pinned destination for both resize and channel swap.
