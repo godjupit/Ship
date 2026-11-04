@@ -149,7 +149,7 @@ bash score_reference.sh
 Environment overrides are supported:
 
 ```bash
-BATCH_SIZE=16 RUNS=3 DEVICE=cuda:0 bash benchmark_reference.sh
+BATCH_SIZE=8 RUNS=3 DEVICE=cuda:0 bash benchmark_reference.sh
 ```
 
 ## Training

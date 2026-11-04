@@ -5,84 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
-from supership.inference_config import INFERENCE_CONFIG, InferenceConfig
 
-from supership.generate_submission import amp_enabled, forward_model, prepare_cuda_graph, run_inference
-
-
-class GraphTests(unittest.TestCase):
-    def test_disabled_keeps_original_model(self):
-        model = torch.nn.Identity()
-        with patch.object(INFERENCE_CONFIG, "cuda_graph", False), \
-             patch("torch.cuda.CUDAGraph", side_effect=AssertionError("unexpected capture")):
-            self.assertIs(prepare_cuda_graph(model, "cuda:0", 2), model)
-
-    def test_cpu_does_not_capture(self):
-        model = torch.nn.Identity()
-        with patch.object(INFERENCE_CONFIG, "cuda_graph", True):
-            self.assertIs(prepare_cuda_graph(model, "cpu", 2), model)
-        self.assertFalse(hasattr(model, "_cuda_graph_runner"))
-
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-    def test_replay_updates_inputs_and_partial_batch_falls_back(self):
-        class Model(torch.nn.Module):
-            def forward(self, samples):
-                pooled = samples.mean(dim=(2, 3))
-                return {"pred_logits": pooled * 2, "pred_boxes": pooled + 1}
-
-        model = Model().cuda().eval()
-        with patch.object(INFERENCE_CONFIG, "cuda_graph", True), patch.object(INFERENCE_CONFIG, "amp", False):
-            runner = prepare_cuda_graph(model, "cuda:0", 2)
-        with torch.inference_mode():
-            pointer = None
-            for count, value in [(2, 1.), (2, 3.), (1, 7.)]:
-                samples = torch.full((count, 3, 640, 640), value, device="cuda:0")
-                expected = model(samples)
-                actual = runner.forward(samples)
-                for key in expected:
-                    torch.testing.assert_close(actual[key], expected[key])
-                if count == 2:
-                    if pointer is None:
-                        pointer = actual["pred_logits"].data_ptr()
-                    self.assertEqual(actual["pred_logits"].data_ptr(), pointer)
-                else:
-                    self.assertEqual(actual["pred_logits"].shape[0], 1)
-
-
-class AMPTests(unittest.TestCase):
-    def test_reserved_options_fail_explicitly(self):
-        for name in ("channels_last", "fuse_conv_bn"):
-            with self.assertRaisesRegex(NotImplementedError, name):
-                InferenceConfig(**{name: True}).validate()
-
-    @patch.object(INFERENCE_CONFIG, "backend", "pytorch")
-    def test_switch_defaults_off_and_cpu_stays_fp32(self):
-        with patch.object(INFERENCE_CONFIG, "amp", False):
-            self.assertFalse(amp_enabled("cuda:0"))
-        with patch.object(INFERENCE_CONFIG, "amp", True):
-            self.assertTrue(amp_enabled("cuda:0"))
-            self.assertFalse(amp_enabled("cpu"))
-
-    def test_disabled_preserves_original_output(self):
-        outputs = {"pred_logits": torch.ones(1), "pred_boxes": torch.ones(1)}
-        self.assertIs(forward_model(lambda samples: outputs, torch.ones(1)), outputs)
-
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-    def test_cuda_forward_uses_half_and_returns_float_postprocessing_inputs(self):
-        layer = torch.nn.Linear(4, 4).cuda().eval()
-        observed = []
-
-        def model(samples):
-            result = layer(samples)
-            observed.append(result.dtype)
-            return {"pred_logits": result, "pred_boxes": result, "extra": 7}
-
-        with torch.inference_mode():
-            outputs = forward_model(model, torch.ones(2, 4, device="cuda"), True)
-        self.assertEqual(observed, [torch.float16])
-        self.assertEqual(outputs["pred_logits"].dtype, torch.float32)
-        self.assertEqual(outputs["pred_boxes"].dtype, torch.float32)
-        self.assertEqual(outputs["extra"], 7)
+from supership.generate_submission import run_inference
 
 
 class SerializationTests(unittest.TestCase):

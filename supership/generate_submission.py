@@ -6,7 +6,6 @@ over stdin only after the organizer starts the timer.
 """
 
 import argparse
-from functools import partial
 import json
 import os
 import sys
@@ -15,43 +14,16 @@ sys.path.insert(0, os.getcwd())  # Run from the RT-DETRv4 repository root.
 
 import torch
 
-from supership.cuda_graph_runner import CUDAGraphRunner
 from supership.inference_config import INFERENCE_CONFIG
-from supership.prefetch import DevicePrefetcher
 from supership.tensorrt_runner import TensorRTRunner, model_fingerprint
 
 
 READY_MARKER = "THU_RS_READY"
 
 
-def amp_enabled(device):
-    """从统一配置读取 AMP，CPU 始终保持普通精度。"""
-    return (INFERENCE_CONFIG.backend == "pytorch" and INFERENCE_CONFIG.amp
-            and torch.device(device).type == "cuda")
-
-
-def forward_model(model, samples, use_amp=False):
-    """仅前向使用自动混合精度，后处理所需的类别和坐标恢复 FP32。"""
-    if isinstance(model, (CUDAGraphRunner, TensorRTRunner)):
-        return model.forward(samples)
-    if not use_amp:
-        return model(samples)
-    # 不需要 model.half() 或 GradScaler，autocast 自动选择算子精度。
-    with torch.autocast(device_type="cuda", dtype=torch.float16):
-        outputs = model(samples)
-    # FP32 后处理不会消除前向的数值差异，因此 AMP 必须重新评估 AP。
-    return {**outputs, "pred_logits": outputs["pred_logits"].float(),
-            "pred_boxes": outputs["pred_boxes"].float()}
-
-
-def prepare_cuda_graph(model, device, batch_size):
-    """按开关在 READY 前捕获；默认关闭，CPU 保持原始前向。"""
-    if isinstance(model, TensorRTRunner):
-        return model  # 引擎自行执行优化后的网络，不叠加 PyTorch Graph 捕获。
-    if INFERENCE_CONFIG.cuda_graph and torch.device(device).type == "cuda":
-        eager_forward = partial(forward_model, model, use_amp=amp_enabled(device))
-        return CUDAGraphRunner(eager_forward, device, batch_size)
-    return model
+def forward_model(model, samples):
+    """调用选定后端，输出沿用公共检测后处理。"""
+    return model.forward(samples) if isinstance(model, TensorRTRunner) else model(samples)
 
 
 def build_runtime(config_path, weights_path, device, backend=None):
@@ -111,7 +83,7 @@ def create_loader(cfg, image_dir, meta_file, batch_size):
     }
     cfg.yaml_cfg["val_dataloader"].pop("total_batch_size", None)
     return create("val_dataloader", cfg.global_cfg, batch_size=batch_size,
-                  pin_memory=INFERENCE_CONFIG.async_prefetch and torch.cuda.is_available())
+                  pin_memory=False)
 
 
 def run_inference(
@@ -126,17 +98,13 @@ def run_inference(
 ):
     # Loader creation is timed because it reads the evaluation metadata.
     loader = create_loader(cfg, image_dir, meta_file, batch_size)
-    use_amp = amp_enabled(device)
     results = []
 
-    with torch.inference_mode(), DevicePrefetcher(
-        loader, device, INFERENCE_CONFIG.async_prefetch
-    ) as batches:
-        for samples, targets, original_sizes in batches:
-            # 模型前向的入口
-            outputs = forward_model(model, samples, use_amp)
-            # 尽早提交 N+1 批上传，争取与 N 批前向计算重叠，而不是等 tolist 后再取数。
-            batches.prefetch_next()
+    with torch.inference_mode():
+        for samples, targets in loader:
+            samples = samples.to(device)
+            original_sizes = torch.stack([target["orig_size"] for target in targets]).to(device)
+            outputs = forward_model(model, samples)
             detections = postprocessor(outputs, original_sizes)
 
             for target, detection in zip(targets, detections):
@@ -208,7 +176,6 @@ def parse_args():
 def main():
     args = parse_args()
     cfg, model, postprocessor = build_runtime(args.config, args.weights, args.device)
-    model = prepare_cuda_graph(model, args.device, args.batch_size)
 
     if args.worker:
         print(READY_MARKER, flush=True)

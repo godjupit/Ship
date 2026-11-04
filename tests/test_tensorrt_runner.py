@@ -9,8 +9,8 @@ from unittest.mock import Mock, patch
 
 import torch
 
-from supership.generate_submission import forward_model, prepare_cuda_graph
-from supership.inference_config import INFERENCE_CONFIG, InferenceConfig
+from supership.generate_submission import forward_model
+from supership.inference_config import InferenceConfig
 from supership.tensorrt_runner import TensorRTRunner, model_fingerprint
 
 
@@ -54,12 +54,10 @@ class TensorRTTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "checksum"):
                     TensorRTRunner(path, "cuda:0", "expected")
 
-    def test_runner_delegation_does_not_recapture_pytorch_graph(self):
+    def test_runner_delegation(self):
         runner = object.__new__(TensorRTRunner)
         expected = {"pred_logits": torch.ones(1), "pred_boxes": torch.ones(1)}
         runner.forward = Mock(return_value=expected)
         samples = torch.ones(1)
-        self.assertIs(forward_model(runner, samples, use_amp=True), expected)
+        self.assertIs(forward_model(runner, samples), expected)
         runner.forward.assert_called_once_with(samples)
-        with patch.object(INFERENCE_CONFIG, "cuda_graph", True):
-            self.assertIs(prepare_cuda_graph(runner, "cuda:0", 8), runner)
