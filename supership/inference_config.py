@@ -6,6 +6,7 @@ from dataclasses import dataclass
 class InferenceConfig:
     amp: bool = False
     cuda_graph: bool = False
+    async_prefetch: bool = False  # 独立拷贝流 + DataLoader 锁页内存。
     channels_last: bool = False  # 预留，尚未实现。
     fuse_conv_bn: bool = False  # 预留，尚未实现。
     profiling: bool = False  # 仅控制分析脚本，正式推理不注册计时挂钩。

@@ -10,6 +10,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
+from supership.inference_config import INFERENCE_CONFIG
+from supership.prefetch import DevicePrefetcher
 from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model, prepare_cuda_graph
 
 BATCH = ContextVar('batch_id', default=None)
@@ -104,17 +106,23 @@ def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta
         loader = instrument_loader(create_loader(cfg, image_dir, meta_file, batch_size), batch_size)
     use_amp = amp_enabled(device)
     results = []
-    with torch.inference_mode():
-        for batch_id, (samples, targets) in traced_batches(loader):
+    source = (batch for _, batch in traced_batches(loader))
+    section = lambda name, **kwargs: mark(name)
+    with torch.inference_mode(), DevicePrefetcher(
+        source, device, INFERENCE_CONFIG.async_prefetch, section
+    ) as batches:
+        for batch_id, (samples, targets, original_sizes) in enumerate(batches):
             token = BATCH.set(batch_id)
             try:
                 with mark('batch_consume_total'):
-                    # 与正式入口一致，在当前流上传本批数据。
-                    with mark('h2d_submit'):
-                        samples = samples.to(device)
-                        original_sizes = torch.stack([t['orig_size'] for t in targets]).to(device)
                     with mark('gpu_forward_eager_submit'):
                         outputs = forward_model(model, samples, use_amp)
+                    # 下一批的 H2D 标记使用下一批编号，避免误标为当前计算批。
+                    next_token = BATCH.set(batch_id + 1)
+                    try:
+                        batches.prefetch_next()
+                    finally:
+                        BATCH.reset(next_token)
                     with mark('gpu_postprocess_submit'):
                         detections = postprocessor(outputs, original_sizes)
                     for target, detection in zip(targets, detections):

@@ -7,6 +7,7 @@
 ```python
 amp: bool = False
 cuda_graph: bool = False
+async_prefetch: bool = False
 channels_last: bool = False
 fuse_conv_bn: bool = False
 profiling: bool = False
@@ -48,3 +49,14 @@ python scripts/profile_inference.py --runs 3 --output analysis/module-timings/su
 独立的 `CUDAGraphRunner.forward(samples)` 管理固定输入、捕获和 replay；模型结构和权重不变。末批不足、类型或设备不匹配时回退到普通前向。Graph 输出会被下一次 replay 覆盖，需先消费；Graph replay 不执行 Python 模块挂钩，因此分析脚本只显示整体前向，不给出无效的三个模块耗时。
 
 AMP 仅在 CUDA 前向启用 autocast，后处理输入恢复 FP32；CPU 保持普通精度。不需要 `.half()` 或 GradScaler。AMP 可能影响 AP，需同时比较精度和时间。两项优化默认均关闭，每次只改一项以便判断收益。
+
+
+## 独立拷贝流预取
+
+配置中设置 `async_prefetch: bool = True`，然后照常运行 `bash ./benchmark_reference.sh`（自动预热一轮）。单个开关同时开启 DataLoader pinned memory 和独立 CUDA H2D 流，不额外复制整批已锁页图像。关闭时仍在当前流直接 `.to(device)`。
+
+现有 8 个 DataLoader worker 已能在 CPU 后台准备批次，但没有 GPU 输入传输重叠。新增 `DevicePrefetcher` 在当前批前向提交后上传下一批，计算流通过该批 Event 等待，并用 `record_stream` 保护跨流 GPU 张量；保留 CPU 源张量直到 DMA 完成，不修改或复用其存储。锁页源数据最多保留两批，只有生产过快时才做最旧拷贝的事件级背压；提前退出时也会安全结束未完成的拷贝。
+
+Graph 固定输入仍只由计算流写入，预取使用独立输入张量，不会覆盖 Graph 输出；最后不足一批仍走普通前向。正式入口和两个分析脚本共用该预取器，分析时 H2D Event 记录在拷贝流。
+
+`image_id.item()` 读取 CPU 数据，不是 GPU 同步点；结果 `.tolist()` 是 JSON 整理所需的回传同步，因此保留，并把下一批上传放在它之前。循环内没有新增全局 `torch.cuda.synchronize()`，只保留初始化及推理结束的同步。独立流提供重叠条件，实际重叠和端到端收益仍需用时间线及多轮计时判断。

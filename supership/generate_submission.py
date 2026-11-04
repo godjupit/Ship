@@ -17,6 +17,7 @@ import torch
 
 from supership.cuda_graph_runner import CUDAGraphRunner
 from supership.inference_config import INFERENCE_CONFIG
+from supership.prefetch import DevicePrefetcher
 
 
 READY_MARKER = "THU_RS_READY"
@@ -91,7 +92,8 @@ def create_loader(cfg, image_dir, meta_file, batch_size):
         ],
     }
     cfg.yaml_cfg["val_dataloader"].pop("total_batch_size", None)
-    return create("val_dataloader", cfg.global_cfg, batch_size=batch_size)
+    return create("val_dataloader", cfg.global_cfg, batch_size=batch_size,
+                  pin_memory=INFERENCE_CONFIG.async_prefetch and torch.cuda.is_available())
 
 
 def run_inference(
@@ -109,13 +111,13 @@ def run_inference(
     use_amp = amp_enabled(device)
     results = []
 
-    with torch.inference_mode():
-        for samples, targets in loader:
-            samples = samples.to(device)
-            original_sizes = torch.stack(
-                [target["orig_size"] for target in targets], dim=0
-            ).to(device)
+    with torch.inference_mode(), DevicePrefetcher(
+        loader, device, INFERENCE_CONFIG.async_prefetch
+    ) as batches:
+        for samples, targets, original_sizes in batches:
             outputs = forward_model(model, samples, use_amp)
+            # 尽早提交 N+1 批上传，争取与 N 批前向计算重叠，而不是等 tolist 后再取数。
+            batches.prefetch_next()
             detections = postprocessor(outputs, original_sizes)
 
             for target, detection in zip(targets, detections):
