@@ -12,7 +12,7 @@ import unicodedata
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model, prepare_cuda_graph, CUDAGraphRunner
 
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
@@ -57,8 +57,8 @@ class StageTimings:
     @contextmanager
     def modules(self, model):
         """临时挂钩三个模块的输入和输出，测量时间但不改 forward 或张量。"""
-        if not self.enabled:
-            # 关闭时完全不注册挂钩，也不创建 CUDA Event。
+        if not self.enabled or isinstance(model, CUDAGraphRunner):
+            # Graph replay 不执行 Python 模块挂钩，不能据此统计三个子模块。
             yield
             return
         handles = []
@@ -132,6 +132,8 @@ class StageTimings:
             "-" * 67,
         ]
         for label, key, per_batch in rows:
+            if key.startswith(("backbone", "encoder", "decoder")) and key not in values:
+                continue
             seconds = values.get(key, 0.0)
             average = f"{seconds * 1000 / self.batches:.3f}" if per_batch and self.batches else "—"
             lines.append(pad(label, 30) + f"{seconds:>12.4f}    {average:>18}")
@@ -142,6 +144,7 @@ class StageTimings:
             "      CPU 与 GPU 阶段可能重叠，各项不能直接相加。",
             "      三个模块属于模型前向的子项，不要与前向总时间重复相加。",
             "      包含首批冷启动及事件挂钩开销，仅用于定位瓶颈。",
+            "      CUDA Graph 模式仅统计整体前向，不显示三个子模块耗时。",
             "      比赛端到端时间见最后汇总，还包含 worker 退出等开销。",
             "=================================", "",
         ]
@@ -231,6 +234,7 @@ def run_inference(
         pin_memory=getattr(loader, "pin_memory", False),
         batch_size=batch_size,
         amp_enabled=use_amp,
+        cuda_graph_enabled=isinstance(model, CUDAGraphRunner),
     )
     Path(output_file).with_suffix(".timing.json").write_text(
         json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
@@ -293,6 +297,7 @@ def main():
         )
         return
     cfg, model, postprocessor = build_runtime(args.config, args.weights, args.device)
+    model = prepare_cuda_graph(model, args.device, args.batch_size)
     print(READY_MARKER, flush=True)
     request = read_worker_request()
     count = run_inference(

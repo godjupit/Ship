@@ -6,6 +6,7 @@ over stdin only after the organizer starts the timer.
 """
 
 import argparse
+from functools import partial
 import json
 import os
 import sys
@@ -13,6 +14,8 @@ import sys
 sys.path.insert(0, os.getcwd())  # Run from the RT-DETRv4 repository root.
 
 import torch
+
+from supership.cuda_graph_runner import CUDAGraphRunner
 
 
 READY_MARKER = "THU_RS_READY"
@@ -26,6 +29,8 @@ def amp_enabled(device):
 
 def forward_model(model, samples, use_amp=False):
     """仅前向使用自动混合精度，后处理所需的类别和坐标恢复 FP32。"""
+    if isinstance(model, CUDAGraphRunner):
+        return model.forward(samples)
     if not use_amp:
         return model(samples)
     # 不需要 model.half() 或 GradScaler，autocast 自动选择算子精度。
@@ -34,6 +39,15 @@ def forward_model(model, samples, use_amp=False):
     # FP32 后处理不会消除前向的数值差异，因此 AMP 必须重新评估 AP。
     return {**outputs, "pred_logits": outputs["pred_logits"].float(),
             "pred_boxes": outputs["pred_boxes"].float()}
+
+
+def prepare_cuda_graph(model, device, batch_size):
+    """按开关在 READY 前捕获；默认关闭，CPU 保持原始前向。"""
+    enabled = os.environ.get("ENABLE_CUDA_GRAPH", "False").strip().lower()
+    if enabled in ("true", "1", "yes") and torch.device(device).type == "cuda":
+        eager_forward = partial(forward_model, model, use_amp=amp_enabled(device))
+        return CUDAGraphRunner(eager_forward, device, batch_size)
+    return model
 
 
 def build_runtime(config_path, weights_path, device):
@@ -173,6 +187,7 @@ def parse_args():
 def main():
     args = parse_args()
     cfg, model, postprocessor = build_runtime(args.config, args.weights, args.device)
+    model = prepare_cuda_graph(model, args.device, args.batch_size)
 
     if args.worker:
         print(READY_MARKER, flush=True)

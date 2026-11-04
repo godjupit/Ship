@@ -6,7 +6,46 @@ from unittest.mock import patch
 
 import torch
 
-from supership.generate_submission import amp_enabled, forward_model, run_inference
+from supership.generate_submission import amp_enabled, forward_model, prepare_cuda_graph, run_inference
+
+
+class GraphTests(unittest.TestCase):
+    def test_disabled_keeps_original_model(self):
+        model = torch.nn.Identity()
+        with patch.dict("os.environ", {"ENABLE_CUDA_GRAPH": "False"}), \
+             patch("torch.cuda.CUDAGraph", side_effect=AssertionError("unexpected capture")):
+            self.assertIs(prepare_cuda_graph(model, "cuda:0", 2), model)
+
+    def test_cpu_does_not_capture(self):
+        model = torch.nn.Identity()
+        with patch.dict("os.environ", {"ENABLE_CUDA_GRAPH": "True"}):
+            self.assertIs(prepare_cuda_graph(model, "cpu", 2), model)
+        self.assertFalse(hasattr(model, "_cuda_graph_runner"))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_replay_updates_inputs_and_partial_batch_falls_back(self):
+        class Model(torch.nn.Module):
+            def forward(self, samples):
+                pooled = samples.mean(dim=(2, 3))
+                return {"pred_logits": pooled * 2, "pred_boxes": pooled + 1}
+
+        model = Model().cuda().eval()
+        with patch.dict("os.environ", {"ENABLE_CUDA_GRAPH": "True", "ENABLE_AMP": "False"}):
+            runner = prepare_cuda_graph(model, "cuda:0", 2)
+        with torch.inference_mode():
+            pointer = None
+            for count, value in [(2, 1.), (2, 3.), (1, 7.)]:
+                samples = torch.full((count, 3, 640, 640), value, device="cuda:0")
+                expected = model(samples)
+                actual = runner.forward(samples)
+                for key in expected:
+                    torch.testing.assert_close(actual[key], expected[key])
+                if count == 2:
+                    if pointer is None:
+                        pointer = actual["pred_logits"].data_ptr()
+                    self.assertEqual(actual["pred_logits"].data_ptr(), pointer)
+                else:
+                    self.assertEqual(actual["pred_logits"].shape[0], 1)
 
 
 class AMPTests(unittest.TestCase):

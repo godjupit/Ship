@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model, prepare_cuda_graph
 
 BATCH = ContextVar('batch_id', default=None)
 IMAGE = ContextVar('image_id', default=None)
@@ -160,6 +160,7 @@ def main():
     instrument_graph_replay()
     with mark('initialization'):
         cfg, model, post = build_runtime(args.config, args.weights, args.device)
+        model = prepare_cuda_graph(model, args.device, args.batch_size)
     print(READY_MARKER, flush=True)
     request = read_worker_request()
     with mark('inference'):

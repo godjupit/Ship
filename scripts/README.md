@@ -72,3 +72,17 @@ AP50 / baseline = 0.793473 / 0.793473
 ```
 
 baseline 使用既有 200 张参考集 AP50，不重复推理。评分在每轮计时结束后执行。设 `COMPARE_ACCURACY=False` 可关闭评分；`OUTPUT_FILE` 可指定结果路径。基准与当前数据集和权重必须对应，不能套用官网验证集的 0.916。
+
+
+## CUDA Graph（可选）
+
+```bash
+ENABLE_CUDA_GRAPH=False PYTHON_BIN=.venv/bin/python bash ./benchmark_reference.sh
+ENABLE_CUDA_GRAPH=True PYTHON_BIN=.venv/bin/python bash ./benchmark_reference.sh
+```
+
+默认关闭；开启时 `supership/cuda_graph_runner.py` 的独立 `CUDAGraphRunner.forward(samples)` 负责固定输入显存、合成输入预热、捕获和 replay。初始化在 READY 前完成，不访问评测数据。普通 PyTorch 模型结构和权重不变，关闭时返回原模型。仅捕获固定 batch 的 640×640 float32 输入前向；末批不足、数据类型或设备不匹配时，调用同一个普通前向作为回退。
+
+返回的 Graph 输出会被下次 replay 覆盖，当前循环会先完成后处理和结果回传再处理下一批。AMP 开关与 Graph 分开，初次对比保持 AMP 关闭。分析脚本复用相同 Runner；Graph replay 不执行 Python 模块挂钩，因此开启 Graph 时仅显示整体前向耗时，不显示无效的三个子模块数值。
+
+独立 Runner 用于隔离捕获生命周期和固定显存，入口只选择是否启用；不引入第三方依赖或修改模型结构。通过 `OUTPUT_FILE` 分开保存两组结果，比较重复运行中位数与 AP50。
