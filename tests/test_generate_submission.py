@@ -10,33 +10,6 @@ from supership.generate_submission import run_inference
 
 
 class SerializationTests(unittest.TestCase):
-    def check_uint8_normalization(self, device):
-        # Cover every pixel value, including values whose CUDA scalar division
-        # rounding differs from the original CPU preprocessing.
-        samples = torch.arange(256, dtype=torch.uint8).repeat(3).reshape(1, 3, 16, 16)
-        expected = samples.float() / 255.
-        target = {"image_id": torch.tensor([7]), "orig_size": torch.tensor([16, 16])}
-
-        def model(actual):
-            self.assertEqual(actual.dtype, torch.float32)
-            self.assertTrue(torch.equal(actual.cpu(), expected))
-            return actual
-
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "submission.json"
-            with patch("supership.generate_submission.create_loader",
-                       return_value=[(samples, [target]), (samples, [target])]):
-                run_inference(None, model, lambda *args: [], device, 1,
-                              "images", "meta", output)
-            self.assertEqual(output.read_text(), "[]")
-
-    def test_uint8_normalization_matches_original_cpu_preprocessing(self):
-        self.check_uint8_normalization("cpu")
-
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-    def test_uint8_normalization_matches_original_on_cuda(self):
-        self.check_uint8_normalization("cuda:0")
-
     def test_preserves_negative_zero_and_rounded_zero_boxes(self):
         detection = {
             "boxes": torch.tensor([

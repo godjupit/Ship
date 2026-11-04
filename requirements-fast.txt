@@ -1,0 +1,4 @@
+# Install after requirements-cuda124.txt; preserves the existing PyTorch build.
+orjson==3.10.15
+# Default fast pipeline uses IMAGE_DECODER=opencv.
+opencv-python==4.11.0.86

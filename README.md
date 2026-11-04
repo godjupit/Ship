@@ -117,6 +117,10 @@ bash score_reference.sh output/reference_submission.json
 
 The validation baseline reported by the organizer is `AP50 = 0.916`.
 
+## Default Optimized Configuration
+
+`bash run.sh --worker` selects the 544×544 FP16 CUDA Graph pipeline. Defaults live in `configs/fastest.env`; environment overrides take precedence. It uses batch 8, OpenCV reduced JPEG decoding, top 100 predictions and a 0.05 score threshold. Install `requirements-fast.txt` after the CUDA requirements. See `scripts/README.md` for configuration and validation commands.
+
 ## End-to-End Timing
 
 The competition protocol separates untimed initialization from timed inference:

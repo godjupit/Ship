@@ -8,12 +8,15 @@ Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
 
 from .rtv4 import RTv4
 
-from .matcher import HungarianMatcher
 from .hybrid_encoder import HybridEncoder
 from .dfine_decoder import DFINETransformer
-from .rtdetrv2_decoder import RTDETRTransformerv2
 
 from .postprocessor import PostProcessor
-from .rtv4_criterion import RTv4Criterion
 
-from .dinov3_teacher import DINOv3TeacherModel
+
+import os
+if os.environ.get("INFERENCE_IMPORTS", "0") != "1":
+    from .matcher import HungarianMatcher
+    from .rtdetrv2_decoder import RTDETRTransformerv2
+    from .rtv4_criterion import RTv4Criterion
+    from .dinov3_teacher import DINOv3TeacherModel

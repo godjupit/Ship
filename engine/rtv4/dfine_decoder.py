@@ -7,6 +7,7 @@ Copyright (c) 2024 D-FINE Authors. All Rights Reserved.
 """
 
 import math
+import os
 import copy
 import functools
 from collections import OrderedDict
@@ -318,7 +319,13 @@ class TransformerDecoder(nn.Module):
             value = value * memory_mask.to(value.dtype).unsqueeze(-1)
         value = value.reshape(value.shape[0], value.shape[1], self.num_head, -1)
         split_shape = [h * w for h, w in memory_spatial_shapes]
-        return value.permute(0, 2, 3, 1).split(split_shape, dim=-1)
+        levels = value.permute(0, 2, 3, 1).split(split_shape, dim=-1)
+        if os.environ.get("DEFORM_VALUE_CACHE", "0") == "1":
+            if torch.is_grad_enabled():
+                raise ValueError("shared value preparation is inference-only")
+            levels = tuple(level.to(dtype=torch.float32, memory_format=torch.contiguous_format)
+                           for level in levels)
+        return levels
 
     def convert_to_deploy(self):
         project = weighting_function(self.reg_max, self.up, self.reg_scale, deploy=True)

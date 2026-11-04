@@ -17,15 +17,20 @@ if [[ -e "$PROFILE_DIR/inference.nsys-rep" || -e "$PROFILE_DIR/inference.sqlite"
     exit 1
 fi
 "$NSYS_BIN" --version | tee "$PROFILE_DIR/version.txt"
+python - "$PROFILE_DIR" <<'REQUEST'
+import json
+import sys
+from pathlib import Path
+profile = Path(sys.argv[1])
+(profile / "request.json").write_text(json.dumps({
+    "image_dir": "data/SuperShip/reference/images",
+    "meta_file": "data/SuperShip/reference/reference_images_meta.json",
+    "output_file": str(profile / "submission.json"),
+}) + "\n")
+REQUEST
 "$NSYS_BIN" profile --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
     -o "$PROFILE_DIR/inference" \
-    python supership/generate_submission.py \
-    --config configs/dfine/dfine_hgnetv2_s_supership.yml \
-    --weights weights/baseline.pth --device "${DEVICE:-cuda:0}" \
-    --batch-size "${BATCH_SIZE:-8}" \
-    --img-folder data/SuperShip/reference/images \
-    --ann-file data/SuperShip/reference/reference_images_meta.json \
-    --output "$PROFILE_DIR/submission.json" 2>&1 | tee "$PROFILE_DIR/capture.log"
+    bash run.sh --worker < "$PROFILE_DIR/request.json" 2>&1 | tee "$PROFILE_DIR/capture.log"
 "$NSYS_BIN" stats --force-export=true --report cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum \
     "$PROFILE_DIR/inference.nsys-rep" 2>&1 | tee "$PROFILE_DIR/stats.txt"
 python - "$PROFILE_DIR/inference.sqlite" <<'PY'

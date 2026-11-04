@@ -1,9 +1,0 @@
-# Experimental environment only; keep the production TensorRT 10.0.1 environment.
-# Install with --no-deps; reuse the repository's PyTorch 2.6.0+cu124 packages.
---extra-index-url https://download.pytorch.org/whl/cu124
---extra-index-url https://pypi.nvidia.com
-torch-tensorrt==2.6.0+cu124
-tensorrt==10.7.0.post1
-tensorrt-cu12==10.7.0.post1
-tensorrt-cu12-bindings==10.7.0
-tensorrt-cu12-libs==10.7.0

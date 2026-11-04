@@ -7,6 +7,7 @@ Copyright (c) 2023 . All Rights Reserved.
 """
 
 import math
+import os
 from typing import List
 
 import torch
@@ -90,6 +91,15 @@ def deformable_attention_core_func_v2(\
     Returns:
         output (Tensor): [bs, Length_{query}, C]
     """
+    implementation = os.environ.get("DEFORM_ATTN_IMPL", "torch")
+    if implementation == "triton":
+        if method != "default" or value_shape != "default":
+            raise ValueError("Triton attention requires default bilinear sampling/value layout")
+        from ..misc.deform_attn_triton import deform_attention
+        return deform_attention(value, value_spatial_shapes, sampling_locations,
+                                attention_weights, num_points_list)
+    if implementation != "torch":
+        raise ValueError("DEFORM_ATTN_IMPL must be torch or triton")
     # TODO find the version
     if value_shape == 'default':
         bs, n_head, c, _ = value[0].shape

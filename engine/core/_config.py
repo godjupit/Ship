@@ -12,7 +12,9 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.cuda.amp.grad_scaler import GradScaler
-from torch.utils.tensorboard import SummaryWriter
+import os
+if os.environ.get("INFERENCE_IMPORTS", "0") != "1":
+    from torch.utils.tensorboard import SummaryWriter
 
 from pathlib import Path
 from typing import Callable, List, Dict
@@ -44,7 +46,7 @@ class BaseConfig(object):
         self._val_dataset :Dataset = None
         self._collate_fn :Callable = None
         self._evaluator :Callable[[nn.Module, DataLoader, str], ] = None
-        self._writer: SummaryWriter = None
+        self._writer: "SummaryWriter" = None
 
         # dataset
         self.num_workers :int = 0
@@ -288,7 +290,8 @@ class BaseConfig(object):
         self._evaluator = fn
 
     @property
-    def writer(self) -> SummaryWriter:
+    def writer(self) -> "SummaryWriter":
+        from torch.utils.tensorboard import SummaryWriter
         if self._writer is None:
             if self.summary_dir:
                 self._writer = SummaryWriter(self.summary_dir)
@@ -298,6 +301,7 @@ class BaseConfig(object):
 
     @writer.setter
     def writer(self, m):
+        from torch.utils.tensorboard import SummaryWriter
         assert isinstance(m, SummaryWriter), f'{type(m)} must be SummaryWriter'
         self._writer = m
 

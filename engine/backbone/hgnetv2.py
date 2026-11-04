@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import os
 from .common import FrozenBatchNorm2d
+from ..misc.feature_ops import feature_cat
 from ..core import register
 import logging
 
@@ -170,7 +171,7 @@ class StemBlock(nn.Module):
         x2 = F.pad(x2, (0, 1, 0, 1))
         x2 = self.stem2b(x2)
         x1 = self.pool(x)
-        x = torch.cat([x1, x2], dim=1)
+        x = feature_cat([x1, x2])
         x = self.stem3(x)
         x = self.stem4(x)
         return x
@@ -278,7 +279,7 @@ class HG_Block(nn.Module):
         for layer in self.layers:
             x = layer(x)
             output.append(x)
-        x = torch.cat(output, dim=1)
+        x = feature_cat(output)
         x = self.aggregation(x)
         if self.residual:
             x = self.drop_path(x) + identity

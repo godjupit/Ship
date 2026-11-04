@@ -1,0 +1,18 @@
+{
+  "PIPELINE": "fast",
+  "PRECISION": "fp16",
+  "BACKEND": "cuda_graph",
+  "BATCH_SIZE": "8",
+  "NUM_WORKERS": "8",
+  "PIPELINE_DEPTH": "3",
+  "SCORE_THRESHOLD": "0.05",
+  "IMAGE_DECODER": "opencv",
+  "VECTORIZED_RESULTS": "1",
+  "CHANNELS_LAST": "1",
+  "MODEL_DEPLOY": "0",
+  "FAST_EXIT": "1",
+  "TORCH_THREADS": "1",
+  "JPEG_REDUCTION": "1",
+  "RESIZE_ANTIALIAS": "1",
+  "INPUT_SIZE": "640"
+}

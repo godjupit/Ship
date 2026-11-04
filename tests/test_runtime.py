@@ -22,8 +22,7 @@ class RuntimeTests(unittest.TestCase):
 
         with patch("builtins.open", side_effect=guarded_open):
             _, model, _ = build_runtime(
-                "configs/dfine/dfine_hgnetv2_s_supership.yml", "weights/baseline.pth", "cpu",
-                backend="pytorch",  # 此测试检查 PyTorch 模块的 buffer，不受当前引擎选择影响。
+                "configs/dfine/dfine_hgnetv2_s_supership.yml", "weights/baseline.pth", "cpu"
             )
         encoder = model.encoder
         for index in encoder.use_encoder_idx:
