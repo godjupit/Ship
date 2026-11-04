@@ -13,7 +13,7 @@ python scripts/profile_inference.py
 python scripts/profile_inference.py --runs 3 --batch-size 8
 ```
 
-每轮打印 `PROFILE {...}`，时间单位为秒：
+每轮打印中文分项表格，包含累计秒数、平均每批毫秒数和输入传输量；末尾打印每轮端到端耗时及中位数。各项对应含义：
 
 - `loader_create_wall_s`：创建加载器、读取元数据。
 - `loader_wait_wall_s`：主进程等待 batch，含 worker 启动；不是全部 worker 的 CPU 工作时间之和。

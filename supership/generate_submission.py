@@ -18,6 +18,36 @@ import torch
 READY_MARKER = "THU_RS_READY"
 
 
+class ReusableInputBuffer:
+    """Reuse staging/device storage on the caller's current CUDA stream."""
+
+    def __init__(self, device, batch_size):
+        self.device = torch.device(device)
+        self.batch_size = batch_size
+        self.cpu_buffer = None
+        self.gpu_buffer = None
+        self.copy_done = None
+
+    def transfer(self, samples):
+        if self.device.type != "cuda":
+            return samples.to(self.device)
+        # The pinned source must remain unchanged until its DMA copy finishes.
+        if self.copy_done is not None:
+            self.copy_done.synchronize()
+        capacity = max(self.batch_size, samples.shape[0])
+        shape = (capacity, *samples.shape[1:])
+        if (self.cpu_buffer is None or self.cpu_buffer.shape != shape
+                or self.cpu_buffer.dtype != samples.dtype):
+            self.cpu_buffer = torch.empty(shape, dtype=samples.dtype, pin_memory=True)
+            self.gpu_buffer = torch.empty(shape, dtype=samples.dtype, device=self.device)
+            self.copy_done = torch.cuda.Event()
+        count = samples.shape[0]
+        self.cpu_buffer[:count].copy_(samples)
+        self.gpu_buffer[:count].copy_(self.cpu_buffer[:count], non_blocking=True)
+        self.copy_done.record(torch.cuda.current_stream(self.device))
+        return self.gpu_buffer[:count]
+
+
 def build_runtime(config_path, weights_path, device):
     from engine.core import YAMLConfig
     from engine.data.dataset.coco_dataset import CocoDetection  # noqa: F401
@@ -58,7 +88,7 @@ def create_loader(cfg, image_dir, meta_file, batch_size):
         ],
     }
     cfg.yaml_cfg["val_dataloader"].pop("total_batch_size", None)
-    return create("val_dataloader", cfg.global_cfg, batch_size=batch_size)
+    return create("val_dataloader", cfg.global_cfg, batch_size=batch_size,pin_memory=True)
 
 
 def run_inference(
@@ -73,14 +103,15 @@ def run_inference(
 ):
     # Loader creation is timed because it reads the evaluation metadata.
     loader = create_loader(cfg, image_dir, meta_file, batch_size)
+    input_buffer = ReusableInputBuffer(device, batch_size)
     results = []
 
     with torch.inference_mode():
         for samples, targets in loader:
-            samples = samples.to(device)
+            samples = input_buffer.transfer(samples)
             original_sizes = torch.stack(
                 [target["orig_size"] for target in targets], dim=0
-            ).to(device)
+            ).to(device, non_blocking=True)
             outputs = model(samples)
             detections = postprocessor(outputs, original_sizes)
 

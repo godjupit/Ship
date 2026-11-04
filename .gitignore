@@ -228,3 +228,10 @@ weights/*.pt
 .venv*/
 .DS_Store
 ._*
+
+# Generated profiling data and figures
+analysis/
+
+# Local Nsight capture artifacts
+*.nsys-rep
+*.qdstrm

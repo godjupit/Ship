@@ -7,11 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, ReusableInputBuffer
 
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
@@ -64,7 +65,42 @@ class StageTimings:
             batches=self.batches, images=self.images, h2d_bytes=self.h2d_bytes,
             total_wall_s=time.perf_counter() - self.started,
         )
-        print("PROFILE " + json.dumps(values, sort_keys=True), file=sys.stderr, flush=True)
+        def pad(text, width):
+            used = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+            return text + " " * max(0, width - used)
+
+        gpu = self.device.type == "cuda"
+        suffix = "_gpu_s" if gpu else "_wall_s"
+        rows = [
+            ("创建加载器 / 读取元数据", "loader_create_wall_s", False),
+            ("等待数据 / 解码与预处理", "loader_wait_wall_s", True),
+            ("CPU → GPU 数据传输" if gpu else "数据设备转换", "h2d" + suffix, True),
+            ("模型前向计算", "forward" + suffix, True),
+            ("模型后处理", "postprocess" + suffix, True),
+            ("结果回传 CPU / 整理", "results_wall_s", True),
+            ("JSON 写盘 / 刷盘", "write_wall_s", False),
+        ]
+        lines = [
+            "", "========== 本轮分项计时 ==========",
+            f"设备：{self.device}    图像：{self.images} 张    批次：{self.batches} 批",
+            f"输入传输总量：{self.h2d_bytes / 1024**2:.2f} MiB",
+            pad("阶段", 30) + "累计耗时（秒）    平均每批（毫秒）",
+            "-" * 67,
+        ]
+        for label, key, per_batch in rows:
+            seconds = values.get(key, 0.0)
+            average = f"{seconds * 1000 / self.batches:.3f}" if per_batch and self.batches else "—"
+            lines.append(pad(label, 30) + f"{seconds:>12.4f}    {average:>18}")
+        lines += [
+            "-" * 67,
+            f"推理函数总耗时：{values['total_wall_s']:.4f} 秒",
+            "说明：加载项统计主进程等待时间；结果整理包含同步等待。",
+            "      CPU 与 GPU 阶段可能重叠，各项不能直接相加。",
+            "      比赛端到端时间见最后汇总，还包含 worker 退出等开销。",
+            "=================================", "",
+        ]
+        print("\n".join(lines), file=sys.stderr, flush=True)
+        return values
 
 
 def run_inference(
@@ -81,6 +117,7 @@ def run_inference(
     timing = StageTimings(device)
     with timing.section("loader_create"):
         loader = create_loader(cfg, image_dir, meta_file, batch_size)
+    input_buffer = ReusableInputBuffer(device, batch_size)
     results = []
 
     previous_batch_end = time.perf_counter() if timing.enabled else 0.0
@@ -93,7 +130,7 @@ def run_inference(
                 timing.h2d_bytes += samples.numel() * samples.element_size()
                 timing.h2d_bytes += sum(t["orig_size"].numel() * t["orig_size"].element_size() for t in targets)
             with timing.section("h2d", gpu=True):
-                samples = samples.to(device)
+                samples = input_buffer.transfer(samples)
                 original_sizes = torch.stack(
                     [target["orig_size"] for target in targets], dim=0
                 ).to(device)
@@ -141,7 +178,15 @@ def run_inference(
             output.flush()
             os.fsync(output.fileno())
 
-    timing.report()
+    values = timing.report()
+    values.update(
+        num_workers=getattr(loader, "num_workers", 0),
+        pin_memory=getattr(loader, "pin_memory", False),
+        batch_size=batch_size,
+    )
+    Path(output_file).with_suffix(".timing.json").write_text(
+        json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+    )
 
     return len(results)
 
@@ -155,7 +200,7 @@ def main():
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--image-dir", default="data/SuperShip/reference/images")
     parser.add_argument("--meta-file", default="data/SuperShip/reference/reference_images_meta.json")
-    parser.add_argument("--output", default="output/profile_submission.json")
+    parser.add_argument("--output", default="analysis/profile_submission.json")
     args = parser.parse_args()
     os.chdir(ROOT)
     if not args.worker:
@@ -167,7 +212,37 @@ def main():
             "--config", args.config, "--weights", args.weights,
             "--device", args.device, "--batch-size", str(args.batch_size),
         ]
-        subprocess.run(command, check=True)
+        print(f"开始计时：{args.runs} 轮，batch_size={args.batch_size}，设备={args.device}", flush=True)
+        completed = subprocess.run(command, capture_output=True, text=True)
+        print(completed.stderr, end="", file=sys.stderr, flush=True)
+        completed.check_returncode()
+        summary = json.loads(completed.stdout.strip().splitlines()[-1])
+        from supership.benchmark_submission import output_path_for_run
+        runs = []
+        report_lines = ["", "========== 端到端计时汇总 =========="]
+        for index, seconds in enumerate(summary["runs_seconds"]):
+            result_path = Path(output_path_for_run(args.output, index, args.runs))
+            timing_path = result_path.with_suffix(".timing.json")
+            run = json.loads(timing_path.read_text(encoding="utf-8"))
+            run.update(end_to_end_s=seconds, output_file=str(result_path))
+            runs.append(run)
+            timing_path.unlink()
+            report_lines.append(f"第 {index + 1} 轮：{seconds:.4f} 秒")
+        report_lines.append(f"中位数：{summary['median_seconds']:.4f} 秒")
+        result_dir = Path(args.output).parent
+        report_lines.append(f"检测结果及分析文件：{result_dir}/")
+        report = "\n".join(report_lines) + "\n"
+        print(report, flush=True)
+        (result_dir / "profile_report.txt").write_text(completed.stderr + report, encoding="utf-8")
+        metrics = dict(
+            device=args.device, config=args.config, weights=args.weights,
+            image_dir=args.image_dir, meta_file=args.meta_file,
+            median_end_to_end_s=summary["median_seconds"], runs=runs,
+            note="分项可能重叠，不能相加；累计统计不是逐 batch 时间线。",
+        )
+        (result_dir / "profile_metrics.json").write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
         return
     cfg, model, postprocessor = build_runtime(args.config, args.weights, args.device)
     print(READY_MARKER, flush=True)
@@ -176,7 +251,7 @@ def main():
         cfg, model, postprocessor, args.device, args.batch_size,
         request["image_dir"], request["meta_file"], request["output_file"],
     )
-    print(f"wrote {count} detections", file=sys.stderr, flush=True)
+    print(f"检测完成：共输出 {count} 条检测结果。", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

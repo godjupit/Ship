@@ -6,7 +6,28 @@ from unittest.mock import patch
 
 import torch
 
-from supership.generate_submission import run_inference
+from supership.generate_submission import ReusableInputBuffer, run_inference
+
+
+class InputBufferTests(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_reuses_storage_and_preserves_partial_batch_values(self):
+        buffer = ReusableInputBuffer("cuda:0", 2)
+        device_pointer = None
+        host_pointer = None
+        for count, value in [(2, 1), (2, 2), (1, 3), (2, 4)]:
+            source = torch.full((count, 3, 4, 4), float(value))
+            result = buffer.transfer(source)
+            # Queue consumption before the next transfer overwrites GPU storage.
+            snapshot = result.clone()
+            if device_pointer is None:
+                device_pointer = result.data_ptr()
+                host_pointer = buffer.cpu_buffer.data_ptr()
+            self.assertEqual(result.data_ptr(), device_pointer)
+            self.assertEqual(buffer.cpu_buffer.data_ptr(), host_pointer)
+            self.assertTrue(buffer.cpu_buffer.is_pinned())
+            self.assertEqual(result.shape, source.shape)
+            torch.testing.assert_close(snapshot.cpu(), source)
 
 
 class SerializationTests(unittest.TestCase):
