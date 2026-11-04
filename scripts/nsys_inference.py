@@ -103,10 +103,8 @@ def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta
     with mark('loader_create'):
         loader = instrument_loader(create_loader(cfg, image_dir, meta_file, batch_size), batch_size)
     results = []
-    batches = (batch for _, batch in traced_batches(loader))
-    section = lambda name, **kwargs: mark(name)
-    with torch.inference_mode()(batches, device, section) as prefetcher:
-        for batch_id, (samples, targets, original_sizes) in enumerate(prefetcher):
+    with torch.inference_mode():
+        for batch_id, (samples, targets) in traced_batches(loader):
             token = BATCH.set(batch_id)
             try:
                 with mark('batch_consume_total'):

@@ -27,3 +27,14 @@ python scripts/profile_inference.py --runs 3 --batch-size 8
 GPU 阶段使用 CUDA Event，最后统一读取，不逐阶段增加同步。CPU 等待与 GPU 阶段可能重叠，不能简单相加。`total_wall_s` 只包含推理函数，端到端时间看官方计时工具打印的 `run` / `median_seconds`。
 
 脚本复用正式入口的模型构建和加载器，独立执行计时流程。当前只保留 worker 数调整，数据在当前 CUDA 流直接上传；分项可能重叠，不能相加。
+
+
+## 模型三个模块的耗时
+
+```bash
+python scripts/profile_inference.py --runs 3 --output analysis/module-timings/submission.json
+```
+
+在“模型前向计算”下查看 Backbone（特征提取）、Encoder（特征融合）、Decoder（检测预测）的累计秒数和平均每批毫秒数。脚本临时注册模块执行前后的挂钩，不修改模型 forward；CUDA Event 记录当前 GPU 流，最后统一读取，CPU 使用主机时钟。对应 JSON 字段为 `backbone_gpu_s`、`encoder_gpu_s`、`decoder_gpu_s`（CPU 后缀为 `_wall_s`）。
+
+三个模块是模型前向的子项，不能与前向总时间重复相加。分项包含首批冷启动、CPU 提交间隔及计时挂钩开销，用于定位瓶颈；正式端到端性能仍使用 `bash ./benchmark_reference.sh`。相同输出目录会覆盖旧报告。

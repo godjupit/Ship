@@ -29,6 +29,7 @@ class StageTimings:
 
     @contextmanager
     def section(self, name, gpu=False):
+        """GPU 用事件记录实际流耗时，CPU 用时钟；每个阶段结束时不强制同步。"""
         if not self.enabled:
             yield
             return
@@ -48,6 +49,37 @@ class StageTimings:
                 yield
             finally:
                 self.add_wall(name, time.perf_counter() - started)
+
+    @contextmanager
+    def modules(self, model):
+        """临时挂钩三个模块的输入和输出，测量时间但不改 forward 或张量。"""
+        handles = []
+
+        def attach(name, module):
+            active = []
+
+            def before(module, inputs):
+                # 在模块执行前记录起点；保存上下文以便结束时配对。
+                section = self.section(name, gpu=True)
+                section.__enter__()
+                active.append(section)
+
+            def after(module, inputs, output):
+                # 只记录终点，不返回新输出，因此不会改变模型计算结果。
+                if active:
+                    active.pop().__exit__(None, None, None)
+
+            handles.append(module.register_forward_pre_hook(before))
+            handles.append(module.register_forward_hook(after, always_call=True))
+
+        try:
+            for name in ("backbone", "encoder", "decoder"):
+                attach(name, getattr(model, name))
+            yield
+        finally:
+            # 推理结束或报错都移除挂钩，避免重复运行时累积统计。
+            for handle in handles:
+                handle.remove()
 
     def add_wall(self, name, seconds):
         if self.enabled:
@@ -76,6 +108,9 @@ class StageTimings:
             ("等待数据 / 解码与预处理", "loader_wait_wall_s", True),
             ("CPU → GPU 数据传输" if gpu else "数据设备转换", "h2d" + suffix, True),
             ("模型前向计算", "forward" + suffix, True),
+            ("  Backbone 特征提取", "backbone" + suffix, True),
+            ("  Encoder 特征融合", "encoder" + suffix, True),
+            ("  Decoder 检测预测", "decoder" + suffix, True),
             ("模型后处理", "postprocess" + suffix, True),
             ("结果回传 CPU / 整理", "results_wall_s", True),
             ("JSON 写盘 / 刷盘", "write_wall_s", False),
@@ -96,6 +131,8 @@ class StageTimings:
             f"推理函数总耗时：{values['total_wall_s']:.4f} 秒",
             "说明：加载项统计主进程等待时间；结果整理包含同步等待。",
             "      CPU 与 GPU 阶段可能重叠，各项不能直接相加。",
+            "      三个模块属于模型前向的子项，不要与前向总时间重复相加。",
+            "      包含首批冷启动及事件挂钩开销，仅用于定位瓶颈。",
             "      比赛端到端时间见最后汇总，还包含 worker 退出等开销。",
             "=================================", "",
         ]
@@ -119,8 +156,10 @@ def run_inference(
         loader = create_loader(cfg, image_dir, meta_file, batch_size)
     results = []
 
-    with torch.inference_mode()(loader, device, timing.section) as prefetcher:
-        for samples, targets, original_sizes in prefetcher:
+    previous_batch_end = time.perf_counter()
+    with torch.inference_mode(), timing.modules(model):
+        for samples, targets in loader:
+            timing.add_wall("loader_wait", time.perf_counter() - previous_batch_end)
             if timing.enabled:
                 timing.batches += 1
                 timing.images += len(targets)
