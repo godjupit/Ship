@@ -8,7 +8,7 @@ source activate_env.sh
 
 ## 正式推理
 
-默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、512×512、batch 8、100 个解码查询、top100、置信度阈值 0.05，OpenCV RGB 缩小解码（2）。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
+默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、512×512、batch 8、100 个解码查询、top100、置信度阈值 0.05，OpenCV RGB 缩小解码（2）。默认 `OPENBLAS_NUM_THREADS=1`，避免未参与后处理的 BLAS 工作线程；调用方可覆盖。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
 
 首次构建需要已有 CUDA PyTorch 环境、`requirements-fast.txt`、`requirements-tensorrt.txt` 和 CUDA Toolkit 的 `nvcc`：
 
