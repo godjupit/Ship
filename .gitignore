@@ -239,3 +239,6 @@ analysis/
 *.qdstrm
 
 reference_CODE
+
+# Project-local profiling tools
+.local-tools/
