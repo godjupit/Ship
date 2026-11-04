@@ -65,3 +65,6 @@ train_dataloader:
 
 val_dataloader:
   total_batch_size: 32
+
+# Current inference experiment resolution.
+eval_spatial_size: [576, 576]

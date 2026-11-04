@@ -77,6 +77,12 @@ def build_runtime(config_path, weights_path, device, backend=None):
             if "ema" in state and "module" in state.get("ema", {})
             else state["model"]
         )
+        # Anchors and masks are derived from resolution, not learned weights.
+        current_state = model.state_dict()
+        state_dict = dict(state_dict)
+        for key in ("decoder.anchors", "decoder.valid_mask"):
+            if key in state_dict and key in current_state and state_dict[key].shape != current_state[key].shape:
+                state_dict[key] = current_state[key]
         model.load_state_dict(state_dict, strict=True)
         model.eval()
     else:
@@ -99,7 +105,7 @@ def create_loader(cfg, image_dir, meta_file, batch_size):
     dataset_cfg["transforms"] = {
         "type": "Compose",
         "ops": [
-            {"type": "Resize", "size": [640, 640]},
+            {"type": "Resize", "size": [576, 576]},
             {"type": "ConvertPILImage", "dtype": "float32", "scale": True},
         ],
     }

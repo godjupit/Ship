@@ -43,11 +43,12 @@ def main():
     path.parent.mkdir(parents=True, exist_ok=True)
     onnx_path = path.with_suffix(".onnx")
     cfg, model, _ = build_runtime(args.config, args.weights, args.device, backend="pytorch")
+    height, width = cfg.yaml_cfg["eval_spatial_size"]
     fingerprint = model_fingerprint(cfg.yaml_cfg, args.weights)
     with torch.inference_mode():
         # batch>1 会导出 anchors 的动态 repeat；batch=1 时该 repeat 仍数学等价。
         # 若用单张样例跟踪，原模型的 Python 分支会把 anchors 固定成 batch=1。
-        sample = torch.zeros((min(2, args.max_batch_size), 3, 640, 640), device=args.device)
+        sample = torch.zeros((min(2, args.max_batch_size), 3, height, width), device=args.device)
         torch.onnx.export(
             ForwardExport(model).eval(), sample, str(onnx_path), opset_version=17,
             input_names=["images"], output_names=["pred_logits", "pred_boxes"],
@@ -72,8 +73,8 @@ def main():
         if args.fp16:
             settings.set_flag(trt.BuilderFlag.FP16)
         profile = builder.create_optimization_profile()
-        profile.set_shape("images", (1, 3, 640, 640),
-                          (args.max_batch_size, 3, 640, 640), (args.max_batch_size, 3, 640, 640))
+        profile.set_shape("images", (1, 3, height, width),
+                          (args.max_batch_size, 3, height, width), (args.max_batch_size, 3, height, width))
         settings.add_optimization_profile(profile)
         engine = builder.build_serialized_network(network, settings)
         if engine is None:

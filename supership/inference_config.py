@@ -5,7 +5,7 @@ from dataclasses import dataclass
 @dataclass
 class InferenceConfig:
     backend: str = "tensorrt"  # 改为 "pytorch" 切回原基线。
-    engine_path: str = "weights/supership.engine"
+    engine_path: str = "weights/supership-576.engine"
     amp: bool = False
     cuda_graph: bool = False
     async_prefetch: bool = False  # 独立拷贝流 + DataLoader 锁页内存。

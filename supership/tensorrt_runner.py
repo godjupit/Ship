@@ -93,15 +93,15 @@ class TensorRTRunner:
         self.stream = torch.cuda.Stream(device=self.device)
         with torch.inference_mode():
             # 初始化阶段只使用合成输入，提前完成 context/输出缓冲区初始化。
-            self.forward(torch.zeros((self.max_batch, 3, 640, 640), device=self.device))
+            self.forward(torch.zeros((self.max_batch, 3, 576, 576), device=self.device))
 
     def forward(self, samples):
         """同一计算流顺序消费输出；下次调用可能覆盖当前输出，不能跨批保存引用。"""
         if samples.device != self.device or samples.dtype != torch.float32:
             raise ValueError("TensorRT expects FP32 input on its configured CUDA device")
         shape = tuple(samples.shape)
-        if len(shape) != 4 or shape[1:] != (3, 640, 640) or not 1 <= shape[0] <= self.max_batch:
-            raise ValueError(f"Engine expects batch 1..{self.max_batch} of 3x640x640 images")
+        if len(shape) != 4 or shape[1:] != (3, 576, 576) or not 1 <= shape[0] <= self.max_batch:
+            raise ValueError(f"Engine expects batch 1..{self.max_batch} of 3x576x576 images")
         with torch.cuda.device(self.device):
             samples = samples.contiguous()
             consumer = torch.cuda.current_stream(self.device)
