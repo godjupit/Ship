@@ -1,0 +1,21 @@
+"""推理和分析脚本共用的开关；修改此文件后直接运行 benchmark 即可。"""
+from dataclasses import dataclass
+
+
+@dataclass
+class InferenceConfig:
+    amp: bool = False
+    cuda_graph: bool = False
+    channels_last: bool = False  # 预留，尚未实现。
+    fuse_conv_bn: bool = False  # 预留，尚未实现。
+    profiling: bool = False  # 仅控制分析脚本，正式推理不注册计时挂钩。
+
+    def validate(self):
+        """预留项不能静默忽略，避免以为开启了实际上没有生效的优化。"""
+        for name in ("channels_last", "fuse_conv_bn"):
+            if getattr(self, name):
+                raise NotImplementedError(f"{name} is reserved and not implemented yet")
+
+
+# 唯一配置实例；开启功能只需修改上面的默认值，不再读取同名环境变量。
+INFERENCE_CONFIG = InferenceConfig()

@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument("--init-timeout", type=float, default=300.0)
     parser.add_argument("--run-timeout", type=float, default=3600.0)
     parser.add_argument("--accuracy-gt", help="reference ground truth for per-run AP50 reporting")
+    parser.add_argument("--warmup", action="store_true", help="run one excluded warmup before measured runs")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command and args.command[0] == "--":
@@ -244,6 +245,14 @@ def run_once(args, run_index):
 
 def main():
     args = parse_args()
+    if getattr(args, "warmup", False):
+        # 预热结果单独保存，不占正式轮次，也不进入最后的中位数。
+        warmup_args = argparse.Namespace(**vars(args))
+        path = Path(args.output_file)
+        warmup_args.output_file = str(path.with_name(f"{path.stem}.warmup{path.suffix}"))
+        warmup_args.runs = 1
+        elapsed, output_file, count = run_once(warmup_args, 0)
+        print(f"warmup: {elapsed:.6f} s, {count} detections, {output_file}", flush=True)
     # 仅参考集脚本启用评分，正式 worker 和通用计时默认不需要标注。
     if args.accuracy_gt:
         if __package__:

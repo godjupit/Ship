@@ -16,15 +16,15 @@ sys.path.insert(0, os.getcwd())  # Run from the RT-DETRv4 repository root.
 import torch
 
 from supership.cuda_graph_runner import CUDAGraphRunner
+from supership.inference_config import INFERENCE_CONFIG
 
 
 READY_MARKER = "THU_RS_READY"
 
 
 def amp_enabled(device):
-    """默认关闭 AMP；仅 CUDA 设备且 ENABLE_AMP=True/1/yes 时启用。"""
-    switch = os.environ.get("ENABLE_AMP", "False").strip().lower()
-    return torch.device(device).type == "cuda" and switch in ("true", "1", "yes")
+    """从统一配置读取 AMP，CPU 始终保持普通精度。"""
+    return INFERENCE_CONFIG.amp and torch.device(device).type == "cuda"
 
 
 def forward_model(model, samples, use_amp=False):
@@ -43,14 +43,14 @@ def forward_model(model, samples, use_amp=False):
 
 def prepare_cuda_graph(model, device, batch_size):
     """按开关在 READY 前捕获；默认关闭，CPU 保持原始前向。"""
-    enabled = os.environ.get("ENABLE_CUDA_GRAPH", "False").strip().lower()
-    if enabled in ("true", "1", "yes") and torch.device(device).type == "cuda":
+    if INFERENCE_CONFIG.cuda_graph and torch.device(device).type == "cuda":
         eager_forward = partial(forward_model, model, use_amp=amp_enabled(device))
         return CUDAGraphRunner(eager_forward, device, batch_size)
     return model
 
 
 def build_runtime(config_path, weights_path, device):
+    INFERENCE_CONFIG.validate()
     from engine.core import YAMLConfig
     from engine.data.dataset.coco_dataset import CocoDetection  # noqa: F401
     from engine.solver.det_engine import evaluate  # noqa: F401

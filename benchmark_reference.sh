@@ -19,6 +19,7 @@ esac
   --meta-file data/SuperShip/reference/reference_images_meta.json \
   --output-file "${OUTPUT_FILE:-output/reference_submission.json}" \
   --runs "${RUNS:-3}" \
+  --warmup \
   "${accuracy_args[@]}" \
   --init-timeout "${INIT_TIMEOUT:-300}" \
   --run-timeout "${RUN_TIMEOUT:-3600}" \

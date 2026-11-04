@@ -7,6 +7,7 @@ from unittest.mock import patch
 import torch
 
 from scripts.profile_inference import StageTimings
+from supership.inference_config import INFERENCE_CONFIG
 
 
 class TinyModel(torch.nn.Module):
@@ -58,7 +59,7 @@ class ModuleTimingTests(unittest.TestCase):
 
 
     def test_disabled_has_no_hooks_or_events(self):
-        with patch.dict("os.environ", {"ENABLE_PROFILING": "False"}):
+        with patch.object(INFERENCE_CONFIG, "profiling", False):
             timing = StageTimings("cuda:0")
         model = TinyModel()
         with patch("torch.cuda.Event", side_effect=AssertionError("unexpected event")):
@@ -70,8 +71,8 @@ class ModuleTimingTests(unittest.TestCase):
         self.assertEqual(timing.events, [])
         self.assertEqual(timing.report(), {"profiling_enabled": False})
 
-    def test_environment_switch(self):
-        with patch.dict("os.environ", {}, clear=True):
+    def test_config_switch(self):
+        with patch.object(INFERENCE_CONFIG, "profiling", False):
             self.assertFalse(StageTimings("cpu").enabled)
-        with patch.dict("os.environ", {"ENABLE_PROFILING": "True"}):
+        with patch.object(INFERENCE_CONFIG, "profiling", True):
             self.assertTrue(StageTimings("cpu").enabled)

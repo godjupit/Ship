@@ -1,88 +1,50 @@
-# 独立计时脚本
+# 推理配置与计时
 
-在项目根目录执行：
+## 统一开关
+
+编辑 `supership/inference_config.py` 中 `InferenceConfig` 的默认值：
+
+```python
+amp: bool = False
+cuda_graph: bool = False
+channels_last: bool = False
+fuse_conv_bn: bool = False
+profiling: bool = False
+```
+
+正式推理、分项分析和 NVTX 脚本共用配置。开启 CUDA Graph 只需把 `cuda_graph` 改为 `True`，然后直接运行命令，不再读取 `ENABLE_AMP`、`ENABLE_CUDA_GRAPH` 或 `ENABLE_PROFILING` 环境变量。所有开关默认关闭，保留普通 PyTorch 基线。
+
+`channels_last` 和 `fuse_conv_bn` 是预留项，尚未实现；设为 True 会明确报错，不会静默忽略。`profiling` 只控制分析脚本，正式推理不注册计时挂钩。
+
+## 正式端到端计时
 
 ```bash
 source activate_env.sh
-ENABLE_PROFILING=True python scripts/profile_inference.py
-```
-
-默认对 200 张参考图像运行一次，检测结果写入 `analysis/profile_submission.json`。
-
-```bash
-ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --batch-size 8
-```
-
-每轮打印中文分项表格，包含累计秒数、平均每批毫秒数和输入传输量；末尾打印每轮端到端耗时及中位数。各项对应含义：
-
-- `loader_create_wall_s`：创建加载器、读取元数据。
-- `loader_wait_wall_s`：主进程等待 batch，含 worker 启动；不是全部 worker 的 CPU 工作时间之和。
-- `h2d_gpu_s`：图片与原始尺寸的 CPU→GPU 传输阶段。
-- `forward_gpu_s`：模型前向计算。
-- `postprocess_gpu_s`：GPU 后处理。
-- `results_wall_s`：结果回传、同步等待及 CPU 整理。
-- `write_wall_s`：JSON 写盘及 flush/fsync。
-- `h2d_bytes` / `images` / `batches`：输入传输字节数、图像数、batch 数。
-
-GPU 阶段使用 CUDA Event，最后统一读取，不逐阶段增加同步。CPU 等待与 GPU 阶段可能重叠，不能简单相加。`total_wall_s` 只包含推理函数，端到端时间看官方计时工具打印的 `run` / `median_seconds`。
-
-脚本复用正式入口的模型构建和加载器，独立执行计时流程。当前只保留 worker 数调整，数据在当前 CUDA 流直接上传；分项可能重叠，不能相加。
-
-
-## 模型三个模块的耗时
-
-```bash
-ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --output analysis/module-timings/submission.json
-```
-
-在“模型前向计算”下查看 Backbone（特征提取）、Encoder（特征融合）、Decoder（检测预测）的累计秒数和平均每批毫秒数。脚本临时注册模块执行前后的挂钩，不修改模型 forward；CUDA Event 记录当前 GPU 流，最后统一读取，CPU 使用主机时钟。对应 JSON 字段为 `backbone_gpu_s`、`encoder_gpu_s`、`decoder_gpu_s`（CPU 后缀为 `_wall_s`）。
-
-三个模块是模型前向的子项，不能与前向总时间重复相加。分项包含首批冷启动、CPU 提交间隔及计时挂钩开销，用于定位瓶颈；正式端到端性能仍使用 `bash ./benchmark_reference.sh`。相同输出目录会覆盖旧报告。
-
-
-## 计时开关
-
-`ENABLE_PROFILING` 默认是 `False`；设为 `True`（也支持 `1`、`yes`）才会注册模块挂钩、创建 CUDA Event 和统计分项。关闭后只保留 benchmark 的端到端时间，JSON 标记 `profiling_enabled: false`，不输出虚假的零耗时。正式 `bash ./benchmark_reference.sh` 始终不使用分析脚本，因此不受该开关影响。
-
-
-## FP16 自动混合精度
-
-默认 `ENABLE_AMP=False`；`True`、`1` 或 `yes` 在 CUDA 上开启。CPU 自动保持原精度。正式入口和两个分析脚本共用 `forward_model()`：只在前向使用 autocast，类别输出和框坐标转回 FP32 后处理；不需要 `.half()` 或 GradScaler。
-
-```bash
-ENABLE_AMP=False PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
-ENABLE_AMP=True PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
-# 分析 AMP 下三个模块的耗时：
-ENABLE_AMP=True ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --output analysis/amp-modules/submission.json
-```
-
-两组先分别预热，并单独保存输出，避免默认文件被覆盖。AMP 会产生数值差异，需用 `bash ./score_reference.sh 对应结果.json` 比较 AP，不能只看速度。`ENABLE_PROFILING` 与 `ENABLE_AMP` 独立，正式 benchmark 不加载分项计时代码。
-
-
-## 每轮 AP50
-
-```bash
 bash ./benchmark_reference.sh
 ```
 
-保留原有的 `wrote`、逐轮计时、默认结果路径和最终计时 JSON，仅每轮增加一行：
+每次先完整预热 1 轮，再正式测试 3 轮；`RUNS` 仅表示正式轮数。预热结果保存为 `output/reference_submission.warmup.json`，只打印 `warmup:` 行，不计入最终 `runs_seconds` 或中位数。每轮 worker 独立启动，因此外部预热主要预热系统与文件缓存；CUDA Graph 仍在各 worker 的 READY 前用合成输入预热、捕获，不提前读取评测数据。
+
+逐轮保留原有计时和 AP50 输出：
 
 ```text
 AP50 / baseline = 0.793473 / 0.793473
 ```
 
-baseline 使用既有 200 张参考集 AP50，不重复推理。评分在每轮计时结束后执行。设 `COMPARE_ACCURACY=False` 可关闭评分；`OUTPUT_FILE` 可指定结果路径。基准与当前数据集和权重必须对应，不能套用官网验证集的 0.916。
+评分在每轮推理计时结束后执行，不重复推理 baseline。`COMPARE_ACCURACY=False` 可关闭评分，`OUTPUT_FILE` 可指定结果路径。基准为 200 张参考集上的既有数值，不是官网验证集的 0.916。默认结果会覆盖，比较实验请分别保存输出。
 
+## 模型分项分析
 
-## CUDA Graph（可选）
+把配置中的 `profiling` 改为 `True` 后执行：
 
 ```bash
-ENABLE_CUDA_GRAPH=False PYTHON_BIN=.venv/bin/python bash ./benchmark_reference.sh
-ENABLE_CUDA_GRAPH=True PYTHON_BIN=.venv/bin/python bash ./benchmark_reference.sh
+python scripts/profile_inference.py --runs 3 --output analysis/module-timings/submission.json
 ```
 
-默认关闭；开启时 `supership/cuda_graph_runner.py` 的独立 `CUDAGraphRunner.forward(samples)` 负责固定输入显存、合成输入预热、捕获和 replay。初始化在 READY 前完成，不访问评测数据。普通 PyTorch 模型结构和权重不变，关闭时返回原模型。仅捕获固定 batch 的 640×640 float32 输入前向；末批不足、数据类型或设备不匹配时，调用同一个普通前向作为回退。
+同样先预热 1 轮；正式轮次的分项保存在 `profile_metrics.json` 和 `profile_report.txt`。CUDA 用 Event 统计，CPU 用主机时钟；三个模块的累计时间和平均每批时间属于前向子项，不能与前向总时间重复相加。分项含冷启动和计时开销，用于定位瓶颈，正式性能看 benchmark。
 
-返回的 Graph 输出会被下次 replay 覆盖，当前循环会先完成后处理和结果回传再处理下一批。AMP 开关与 Graph 分开，初次对比保持 AMP 关闭。分析脚本复用相同 Runner；Graph replay 不执行 Python 模块挂钩，因此开启 Graph 时仅显示整体前向耗时，不显示无效的三个子模块数值。
+## CUDA Graph 与 AMP
 
-独立 Runner 用于隔离捕获生命周期和固定显存，入口只选择是否启用；不引入第三方依赖或修改模型结构。通过 `OUTPUT_FILE` 分开保存两组结果，比较重复运行中位数与 AP50。
+独立的 `CUDAGraphRunner.forward(samples)` 管理固定输入、捕获和 replay；模型结构和权重不变。末批不足、类型或设备不匹配时回退到普通前向。Graph 输出会被下一次 replay 覆盖，需先消费；Graph replay 不执行 Python 模块挂钩，因此分析脚本只显示整体前向，不给出无效的三个模块耗时。
+
+AMP 仅在 CUDA 前向启用 autocast，后处理输入恢复 FP32；CPU 保持普通精度。不需要 `.half()` 或 GradScaler。AMP 可能影响 AP，需同时比较精度和时间。两项优化默认均关闭，每次只改一项以便判断收益。

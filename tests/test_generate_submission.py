@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
+from supership.inference_config import INFERENCE_CONFIG, InferenceConfig
 
 from supership.generate_submission import amp_enabled, forward_model, prepare_cuda_graph, run_inference
 
@@ -12,13 +13,13 @@ from supership.generate_submission import amp_enabled, forward_model, prepare_cu
 class GraphTests(unittest.TestCase):
     def test_disabled_keeps_original_model(self):
         model = torch.nn.Identity()
-        with patch.dict("os.environ", {"ENABLE_CUDA_GRAPH": "False"}), \
+        with patch.object(INFERENCE_CONFIG, "cuda_graph", False), \
              patch("torch.cuda.CUDAGraph", side_effect=AssertionError("unexpected capture")):
             self.assertIs(prepare_cuda_graph(model, "cuda:0", 2), model)
 
     def test_cpu_does_not_capture(self):
         model = torch.nn.Identity()
-        with patch.dict("os.environ", {"ENABLE_CUDA_GRAPH": "True"}):
+        with patch.object(INFERENCE_CONFIG, "cuda_graph", True):
             self.assertIs(prepare_cuda_graph(model, "cpu", 2), model)
         self.assertFalse(hasattr(model, "_cuda_graph_runner"))
 
@@ -30,7 +31,7 @@ class GraphTests(unittest.TestCase):
                 return {"pred_logits": pooled * 2, "pred_boxes": pooled + 1}
 
         model = Model().cuda().eval()
-        with patch.dict("os.environ", {"ENABLE_CUDA_GRAPH": "True", "ENABLE_AMP": "False"}):
+        with patch.object(INFERENCE_CONFIG, "cuda_graph", True), patch.object(INFERENCE_CONFIG, "amp", False):
             runner = prepare_cuda_graph(model, "cuda:0", 2)
         with torch.inference_mode():
             pointer = None
@@ -49,10 +50,15 @@ class GraphTests(unittest.TestCase):
 
 
 class AMPTests(unittest.TestCase):
+    def test_reserved_options_fail_explicitly(self):
+        for name in ("channels_last", "fuse_conv_bn"):
+            with self.assertRaisesRegex(NotImplementedError, name):
+                InferenceConfig(**{name: True}).validate()
+
     def test_switch_defaults_off_and_cpu_stays_fp32(self):
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.object(INFERENCE_CONFIG, "amp", False):
             self.assertFalse(amp_enabled("cuda:0"))
-        with patch.dict("os.environ", {"ENABLE_AMP": "True"}):
+        with patch.object(INFERENCE_CONFIG, "amp", True):
             self.assertTrue(amp_enabled("cuda:0"))
             self.assertFalse(amp_enabled("cpu"))
 

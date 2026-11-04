@@ -12,17 +12,15 @@ import unicodedata
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
+from supership.inference_config import INFERENCE_CONFIG
 from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model, prepare_cuda_graph, CUDAGraphRunner
 
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
 
     def __init__(self, device, enabled=None):
-        # 默认关闭；环境变量会自动传给 benchmark 启动的 worker 子进程。
-        if enabled is None:
-            switch = os.environ.get("ENABLE_PROFILING", "False").strip().lower()
-            enabled = switch in ("1", "true", "yes")
-        self.enabled = bool(enabled)
+        # 主进程和 worker 导入同一个配置文件，不需要传递环境变量开关。
+        self.enabled = INFERENCE_CONFIG.profiling if enabled is None else bool(enabled)
         self.device = torch.device(device)
         self.wall = {}
         self.events = []
@@ -259,12 +257,12 @@ def main():
         command = [
             sys.executable, str(ROOT / "supership/benchmark_submission.py"),
             "--image-dir", args.image_dir, "--meta-file", args.meta_file,
-            "--output-file", args.output, "--runs", str(args.runs), "--",
+            "--output-file", args.output, "--runs", str(args.runs), "--warmup", "--",
             sys.executable, str(Path(__file__).resolve()), "--worker",
             "--config", args.config, "--weights", args.weights,
             "--device", args.device, "--batch-size", str(args.batch_size),
         ]
-        print(f"开始计时：{args.runs} 轮，batch_size={args.batch_size}，设备={args.device}", flush=True)
+        print(f"先预热 1 轮，再正式计时 {args.runs} 轮，batch_size={args.batch_size}，设备={args.device}", flush=True)
         completed = subprocess.run(command, capture_output=True, text=True)
         print(completed.stderr, end="", file=sys.stderr, flush=True)
         completed.check_returncode()
