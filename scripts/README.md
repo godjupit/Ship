@@ -76,3 +76,14 @@ NVIDIA_TENSORRT_DISABLE_INTERNAL_PIP=1 .venv/bin/python -m pip install -r requir
 当前 `inference_config.py` 已设置 `backend="tensorrt"`，构建好引擎后直接运行 `bash ./benchmark_reference.sh`。改回 `"pytorch"` 即恢复原推理路径。引擎通过独立 `TensorRTRunner.forward(samples)` 在非默认 CUDA 流异步执行，并与调用流建立依赖，返回原有 logits/boxes，沿用原 FP32 后处理和 AP50 输出。可与异步预取配合；不会再叠加 PyTorch CUDA Graph 捕获。AMP 配置只影响 PyTorch；TensorRT 精度在构建时由 `--fp16` 决定。
 
 默认支持 batch 1～8，最后不足一批也直接由 TensorRT 执行；更大 batch 需用 `--max-batch-size` 重新构建。引擎及其 `.engine.json` 校验信息均保存在本地，包含配置/权重指纹、GPU、TensorRT 版本和引擎校验和；配置、权重或运行版本变化后必须重建，避免误用缓存。缺少引擎时明确报错，不静默回退 PyTorch。首次构建耗时不包含在 benchmark 中，每次测试仍先完整预热一轮再正式计时。
+
+## Batch 与 worker 参数扫描
+
+```bash
+source activate_env.sh
+python scripts/benchmark_batch_workers.py --batch-sizes 1 2 4 8 --workers 0 2 4 8 --runs 3
+```
+
+每组完整预热一次，再正式计时 `--runs` 次，默认保留每轮 AP50；`--skip-accuracy` 可跳过计时外评分。使用当前统一推理配置和正式 worker，不修改原 YAML，每组仅通过独立配置覆盖 `num_workers`。TensorRT 会在开始前检查最大 batch 是否超出已有引擎上限，脚本不会自动重建引擎。
+
+结果默认保存在独立的 `output/batch-workers-时间戳/`，每组保存配置、日志和检测 JSON；汇总写入 `summary.json`、`summary.csv`，最后按中位数排序打印。可用 `--output-dir` 指定不存在的新目录。失败组合记录为 `failed` 并继续其他组合，最终返回非零退出码。各组按给定顺序执行，正式性能判断应再用反向顺序复测，避免系统状态随时间变化造成偏差。
