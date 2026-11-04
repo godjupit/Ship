@@ -12,7 +12,7 @@ import unicodedata
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, ReusableInputBuffer
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher
 
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
@@ -117,27 +117,20 @@ def run_inference(
     timing = StageTimings(device)
     with timing.section("loader_create"):
         loader = create_loader(cfg, image_dir, meta_file, batch_size)
-    input_buffer = ReusableInputBuffer(device, batch_size)
     results = []
 
-    previous_batch_end = time.perf_counter() if timing.enabled else 0.0
-    with torch.inference_mode():
-        for samples, targets in loader:
-            timing.add_wall("loader_wait", time.perf_counter() - previous_batch_end)
+    with torch.inference_mode(), DevicePrefetcher(loader, device, timing.section) as prefetcher:
+        for samples, targets, original_sizes in prefetcher:
             if timing.enabled:
                 timing.batches += 1
                 timing.images += len(targets)
                 timing.h2d_bytes += samples.numel() * samples.element_size()
                 timing.h2d_bytes += sum(t["orig_size"].numel() * t["orig_size"].element_size() for t in targets)
-            with timing.section("h2d", gpu=True):
-                samples = input_buffer.transfer(samples)
-                original_sizes = torch.stack(
-                    [target["orig_size"] for target in targets], dim=0
-                ).to(device)
             with timing.section("forward", gpu=True):
                 outputs = model(samples)
             with timing.section("postprocess", gpu=True):
                 detections = postprocessor(outputs, original_sizes)
+            prefetcher.preload_next()
 
             result_started = time.perf_counter() if timing.enabled else 0.0
             for target, detection in zip(targets, detections):
@@ -165,7 +158,6 @@ def run_inference(
                     )
 
             timing.add_wall("results", time.perf_counter() - result_started)
-            previous_batch_end = time.perf_counter() if timing.enabled else 0.0
 
     if str(device).startswith("cuda"):
         torch.cuda.synchronize(device)

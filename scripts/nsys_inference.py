@@ -1,4 +1,4 @@
-"""NVTX instrumentation using the production reusable input buffers."""
+"""NVTX instrumentation using the production pinned-memory input transfers."""
 import argparse
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, ReusableInputBuffer
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher
 
 BATCH = ContextVar('batch_id', default=None)
 IMAGE = ContextVar('image_id', default=None)
@@ -102,22 +102,19 @@ def instrument_graph_replay():
 def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta_file, output_file):
     with mark('loader_create'):
         loader = instrument_loader(create_loader(cfg, image_dir, meta_file, batch_size), batch_size)
-    input_buffer = ReusableInputBuffer(device, batch_size)
     results = []
-    with torch.inference_mode():
-        for batch_id, (samples, targets) in traced_batches(loader):
+    batches = (batch for _, batch in traced_batches(loader))
+    section = lambda name, **kwargs: mark(name)
+    with torch.inference_mode(), DevicePrefetcher(batches, device, section) as prefetcher:
+        for batch_id, (samples, targets, original_sizes) in enumerate(prefetcher):
             token = BATCH.set(batch_id)
             try:
                 with mark('batch_consume_total'):
-                    with mark('h2d_submit'):
-                        samples = input_buffer.transfer(samples)
-                        original_sizes = torch.stack(
-                            [target['orig_size'] for target in targets], dim=0,
-                        ).to(device)
                     with mark('gpu_forward_eager_submit'):
                         outputs = model(samples)
                     with mark('gpu_postprocess_submit'):
                         detections = postprocessor(outputs, original_sizes)
+                    prefetcher.preload_next()
                     for target, detection in zip(targets, detections):
                         image_id = target['image_id'].item()
                         with mark('d2h', image=image_id):

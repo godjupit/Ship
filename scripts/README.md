@@ -7,7 +7,7 @@ source activate_env.sh
 python scripts/profile_inference.py
 ```
 
-默认对 200 张参考图像运行一次，检测结果写入 `output/profile_submission.json`。
+默认对 200 张参考图像运行一次，检测结果写入 `analysis/profile_submission.json`。
 
 ```bash
 python scripts/profile_inference.py --runs 3 --batch-size 8
@@ -26,4 +26,4 @@ python scripts/profile_inference.py --runs 3 --batch-size 8
 
 GPU 阶段使用 CUDA Event，最后统一读取，不逐阶段增加同步。CPU 等待与 GPU 阶段可能重叠，不能简单相加。`total_wall_s` 只包含推理函数，端到端时间看官方计时工具打印的 `run` / `median_seconds`。
 
-脚本复用正式入口的模型构建和加载器，独立执行计时流程；`run.sh` 和 `supership/generate_submission.py` 保持原版。
+脚本复用正式入口的模型构建、加载器和 `DevicePrefetcher`，独立执行计时流程。CUDA H2D Event 记录在拷贝流，loader_wait 包含启动和预取期间的取数等待；分项可能重叠，不能相加。

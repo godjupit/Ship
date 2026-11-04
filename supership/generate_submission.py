@@ -6,6 +6,7 @@ over stdin only after the organizer starts the timer.
 """
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -18,34 +19,75 @@ import torch
 READY_MARKER = "THU_RS_READY"
 
 
-class ReusableInputBuffer:
-    """Reuse staging/device storage on the caller's current CUDA stream."""
+class DevicePrefetcher:
+    """用独立 CUDA 流预取下一批；CPU 推理使用普通设备转换。"""
 
-    def __init__(self, device, batch_size):
+    def __init__(self, loader, device, section=None):
         self.device = torch.device(device)
-        self.batch_size = batch_size
-        self.cpu_buffer = None
-        self.gpu_buffer = None
-        self.copy_done = None
+        self.section = section or (lambda *args, **kwargs: nullcontext())
+        self.stream = (torch.cuda.Stream(device=self.device)
+                       if self.device.type == "cuda" else None)
+        self.pending = None
+        self.inflight = []
+        with self.section("loader_wait"):
+            self.iterator = iter(loader)
+        self.preload_next()
 
-    def transfer(self, samples):
-        if self.device.type != "cuda":
-            return samples.to(self.device)
-        # The pinned source must remain unchanged until its DMA copy finishes.
-        if self.copy_done is not None:
-            self.copy_done.synchronize()
-        capacity = max(self.batch_size, samples.shape[0])
-        shape = (capacity, *samples.shape[1:])
-        if (self.cpu_buffer is None or self.cpu_buffer.shape != shape
-                or self.cpu_buffer.dtype != samples.dtype):
-            self.cpu_buffer = torch.empty(shape, dtype=samples.dtype, pin_memory=True)
-            self.gpu_buffer = torch.empty(shape, dtype=samples.dtype, device=self.device)
-            self.copy_done = torch.cuda.Event()
-        count = samples.shape[0]
-        self.cpu_buffer[:count].copy_(samples)
-        self.gpu_buffer[:count].copy_(self.cpu_buffer[:count], non_blocking=True)
-        self.copy_done.record(torch.cuda.current_stream(self.device))
-        return self.gpu_buffer[:count]
+    def preload_next(self):
+        """取出下一批并提交上传；在当前批计算提交后调用。"""
+        self.inflight = [entry for entry in self.inflight if not entry[0].query()]
+        with self.section("loader_wait"):
+            batch = next(self.iterator, None)
+        if batch is None:
+            self.pending = None
+            return
+        samples, targets = batch
+        sizes = torch.stack([target["orig_size"] for target in targets])
+        if self.stream is None:
+            with self.section("h2d", gpu=True):
+                self.pending = (samples.to(self.device), targets, sizes.to(self.device), None)
+            return
+        # 图片和尺寸均使用锁页内存，并保留 CPU 引用直到 DMA 上传完成。
+        if not samples.is_pinned():
+            samples = samples.pin_memory()
+        sizes = sizes.pin_memory()
+        with torch.cuda.stream(self.stream):
+            with self.section("h2d", gpu=True):
+                gpu_samples = samples.to(self.device, non_blocking=True)
+                gpu_sizes = sizes.to(self.device, non_blocking=True)
+            ready = torch.cuda.Event()
+            ready.record(self.stream)
+        self.inflight.append((ready, samples, sizes))
+        self.pending = (gpu_samples, targets, gpu_sizes, ready)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        """交出已预取的数据，让计算流等待对应批次的上传事件。"""
+        if self.pending is None:
+            raise StopIteration
+        samples, targets, sizes, ready = self.pending
+        self.pending = None
+        if ready is not None:
+            stream = torch.cuda.current_stream(self.device)
+            # 只让 GPU 计算流等待；record_stream 防止显存被分配器提前复用。
+            stream.wait_event(ready)
+            samples.record_stream(stream)
+            sizes.record_stream(stream)
+        return samples, targets, sizes
+
+    def close(self):
+        """退出时等上传结束，保证提前退出或异常时 CPU 数据也能安全释放。"""
+        if self.stream is not None:
+            self.stream.synchronize()
+        self.inflight.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 def build_runtime(config_path, weights_path, device):
@@ -103,17 +145,14 @@ def run_inference(
 ):
     # Loader creation is timed because it reads the evaluation metadata.
     loader = create_loader(cfg, image_dir, meta_file, batch_size)
-    input_buffer = ReusableInputBuffer(device, batch_size)
     results = []
 
-    with torch.inference_mode():
-        for samples, targets in loader:
-            samples = input_buffer.transfer(samples)
-            original_sizes = torch.stack(
-                [target["orig_size"] for target in targets], dim=0
-            ).to(device, non_blocking=True)
+    with torch.inference_mode(), DevicePrefetcher(loader, device) as prefetcher:
+        for samples, targets, original_sizes in prefetcher:
             outputs = model(samples)
             detections = postprocessor(outputs, original_sizes)
+            # 在结果回传阻塞 CPU 前上传下一批，争取与当前批 GPU 计算重叠。
+            prefetcher.preload_next()
 
             for target, detection in zip(targets, detections):
                 image_id = target["image_id"].item()
