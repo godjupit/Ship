@@ -78,7 +78,7 @@ def create_loader(cfg, image_dir, meta_file, batch_size):
         "type": "Compose",
         "ops": [
             {"type": "Resize", "size": [576, 576]},
-            {"type": "ConvertPILImage", "dtype": "float32", "scale": True},
+            {"type": "ConvertPILImage", "dtype": "uint8", "scale": False},
         ],
     }
     cfg.yaml_cfg["val_dataloader"].pop("total_batch_size", None)
@@ -99,10 +99,18 @@ def run_inference(
     # Loader creation is timed because it reads the evaluation metadata.
     loader = create_loader(cfg, image_dir, meta_file, batch_size)
     results = []
+    normalization_scale = None
 
     with torch.inference_mode():
         for samples, targets in loader:
+            # Transfer bytes first so worker IPC and H2D carry 1/4 the data.
             samples = samples.to(device)
+            if samples.dtype == torch.uint8:
+                if normalization_scale is None:
+                    normalization_scale = torch.tensor(255., dtype=torch.float32, device=device)
+                # A device tensor divisor preserves CPU division rounding;
+                # division by a Python scalar can use a rounded reciprocal.
+                samples = samples.float().div_(normalization_scale)
             original_sizes = torch.stack([target["orig_size"] for target in targets]).to(device)
             outputs = forward_model(model, samples)
             detections = postprocessor(outputs, original_sizes)
