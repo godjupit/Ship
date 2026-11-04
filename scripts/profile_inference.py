@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 import torch
 from supership.inference_config import INFERENCE_CONFIG
 from supership.prefetch import DevicePrefetcher
+from supership.tensorrt_runner import TensorRTRunner
 from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model, prepare_cuda_graph, CUDAGraphRunner
 
 class StageTimings:
@@ -56,8 +57,8 @@ class StageTimings:
     @contextmanager
     def modules(self, model):
         """临时挂钩三个模块的输入和输出，测量时间但不改 forward 或张量。"""
-        if not self.enabled or isinstance(model, CUDAGraphRunner):
-            # Graph replay 不执行 Python 模块挂钩，不能据此统计三个子模块。
+        if not self.enabled or isinstance(model, (CUDAGraphRunner, TensorRTRunner)):
+            # 编译后的 Runner 不执行 Python 模块挂钩，不能据此统计三个子模块。
             yield
             return
         handles = []
@@ -143,7 +144,7 @@ class StageTimings:
             "      CPU 与 GPU 阶段可能重叠，各项不能直接相加。",
             "      三个模块属于模型前向的子项，不要与前向总时间重复相加。",
             "      包含首批冷启动及事件挂钩开销，仅用于定位瓶颈。",
-            "      CUDA Graph 模式仅统计整体前向，不显示三个子模块耗时。",
+            "      CUDA Graph / TensorRT 模式仅统计整体前向，不显示三个子模块耗时。",
             "      比赛端到端时间见最后汇总，还包含 worker 退出等开销。",
             "=================================", "",
         ]
@@ -228,6 +229,8 @@ def run_inference(
         pin_memory=getattr(loader, "pin_memory", False),
         batch_size=batch_size,
         amp_enabled=use_amp,
+        backend=INFERENCE_CONFIG.backend,
+        engine_precision=getattr(model, "precision", None),
         cuda_graph_enabled=isinstance(model, CUDAGraphRunner),
         async_prefetch_enabled=INFERENCE_CONFIG.async_prefetch and torch.device(device).type == "cuda",
     )

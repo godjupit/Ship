@@ -216,6 +216,8 @@ SuperShip-public-data-v2.tar.zst
 # Large assets and local setup artifacts (code-only repository)
 weights/*.pth
 weights/*.pt
+weights/*.engine.json
+weights/*.engine.tmp
 *.onnx
 *.plan
 *.whl
@@ -235,3 +237,5 @@ analysis/
 # Local Nsight capture artifacts
 *.nsys-rep
 *.qdstrm
+
+reference_CODE

@@ -1,0 +1,3 @@
+# Optional build/runtime dependencies; preserve the project's CUDA 12.4 PyTorch.
+onnx==1.17.0
+tensorrt-cu12==10.0.1

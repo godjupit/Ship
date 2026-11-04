@@ -18,6 +18,7 @@ import torch
 from supership.cuda_graph_runner import CUDAGraphRunner
 from supership.inference_config import INFERENCE_CONFIG
 from supership.prefetch import DevicePrefetcher
+from supership.tensorrt_runner import TensorRTRunner, model_fingerprint
 
 
 READY_MARKER = "THU_RS_READY"
@@ -25,12 +26,13 @@ READY_MARKER = "THU_RS_READY"
 
 def amp_enabled(device):
     """从统一配置读取 AMP，CPU 始终保持普通精度。"""
-    return INFERENCE_CONFIG.amp and torch.device(device).type == "cuda"
+    return (INFERENCE_CONFIG.backend == "pytorch" and INFERENCE_CONFIG.amp
+            and torch.device(device).type == "cuda")
 
 
 def forward_model(model, samples, use_amp=False):
     """仅前向使用自动混合精度，后处理所需的类别和坐标恢复 FP32。"""
-    if isinstance(model, CUDAGraphRunner):
+    if isinstance(model, (CUDAGraphRunner, TensorRTRunner)):
         return model.forward(samples)
     if not use_amp:
         return model(samples)
@@ -44,13 +46,16 @@ def forward_model(model, samples, use_amp=False):
 
 def prepare_cuda_graph(model, device, batch_size):
     """按开关在 READY 前捕获；默认关闭，CPU 保持原始前向。"""
+    if isinstance(model, TensorRTRunner):
+        return model  # 引擎自行执行优化后的网络，不叠加 PyTorch Graph 捕获。
     if INFERENCE_CONFIG.cuda_graph and torch.device(device).type == "cuda":
         eager_forward = partial(forward_model, model, use_amp=amp_enabled(device))
         return CUDAGraphRunner(eager_forward, device, batch_size)
     return model
 
 
-def build_runtime(config_path, weights_path, device):
+def build_runtime(config_path, weights_path, device, backend=None):
+    """加载选择的引擎和公共后处理；导出与基线测试可显式指定 PyTorch。"""
     INFERENCE_CONFIG.validate()
     from engine.core import YAMLConfig
     from engine.data.dataset.coco_dataset import CocoDetection  # noqa: F401
@@ -60,15 +65,22 @@ def build_runtime(config_path, weights_path, device):
     if "HGNetv2" in cfg.yaml_cfg:
         cfg.yaml_cfg["HGNetv2"]["pretrained"] = False
 
-    model = cfg.model.to(device)
-    state = torch.load(weights_path, map_location="cpu")
-    state_dict = (
-        state["ema"]["module"]
-        if "ema" in state and "module" in state.get("ema", {})
-        else state["model"]
-    )
-    model.load_state_dict(state_dict, strict=True)
-    model.eval()
+    selected_backend = backend or INFERENCE_CONFIG.backend
+    if selected_backend == "tensorrt":
+        model = TensorRTRunner(INFERENCE_CONFIG.engine_path, device,
+                               model_fingerprint(cfg.yaml_cfg, weights_path))
+    elif selected_backend == "pytorch":
+        model = cfg.model.to(device)
+        state = torch.load(weights_path, map_location="cpu")
+        state_dict = (
+            state["ema"]["module"]
+            if "ema" in state and "module" in state.get("ema", {})
+            else state["model"]
+        )
+        model.load_state_dict(state_dict, strict=True)
+        model.eval()
+    else:
+        raise ValueError(f"Unknown inference backend: {selected_backend}")
     postprocessor = cfg.postprocessor.to(device)
 
     if str(device).startswith("cuda"):
@@ -115,6 +127,7 @@ def run_inference(
         loader, device, INFERENCE_CONFIG.async_prefetch
     ) as batches:
         for samples, targets, original_sizes in batches:
+            # 模型前向的入口
             outputs = forward_model(model, samples, use_amp)
             # 尽早提交 N+1 批上传，争取与 N 批前向计算重叠，而不是等 tolist 后再取数。
             batches.prefetch_next()

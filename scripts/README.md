@@ -5,6 +5,8 @@
 编辑 `supership/inference_config.py` 中 `InferenceConfig` 的默认值：
 
 ```python
+backend: str = "tensorrt"
+engine_path: str = "weights/supership.engine"
 amp: bool = False
 cuda_graph: bool = False
 async_prefetch: bool = False
@@ -13,7 +15,7 @@ fuse_conv_bn: bool = False
 profiling: bool = False
 ```
 
-正式推理、分项分析和 NVTX 脚本共用配置。开启 CUDA Graph 只需把 `cuda_graph` 改为 `True`，然后直接运行命令，不再读取 `ENABLE_AMP`、`ENABLE_CUDA_GRAPH` 或 `ENABLE_PROFILING` 环境变量。所有开关默认关闭，保留普通 PyTorch 基线。
+正式推理、分项分析和 NVTX 脚本共用配置。开启 CUDA Graph 只需把 `cuda_graph` 改为 `True`，然后直接运行命令，不再读取 `ENABLE_AMP`、`ENABLE_CUDA_GRAPH` 或 `ENABLE_PROFILING` 环境变量。优化开关默认关闭；当前后端为 TensorRT，改回 `backend="pytorch"` 即恢复原 PyTorch 基线。
 
 `channels_last` 和 `fuse_conv_bn` 是预留项，尚未实现；设为 True 会明确报错，不会静默忽略。`profiling` 只控制分析脚本，正式推理不注册计时挂钩。
 
@@ -46,7 +48,7 @@ python scripts/profile_inference.py --runs 3 --output analysis/module-timings/su
 
 ## CUDA Graph 与 AMP
 
-独立的 `CUDAGraphRunner.forward(samples)` 管理固定输入、捕获和 replay；模型结构和权重不变。末批不足、类型或设备不匹配时回退到普通前向。Graph 输出会被下一次 replay 覆盖，需先消费；Graph replay 不执行 Python 模块挂钩，因此分析脚本只显示整体前向，不给出无效的三个模块耗时。
+独立的 `CUDAGraphRunner.forward(samples)` 管理固定输入、捕获和 replay；模型结构和权重不变。末批不足、类型或设备不匹配时回退到普通前向。Graph 输出会被下一次 replay 覆盖，需先消费；CUDA Graph replay 和 TensorRT 都不执行 Python 模块挂钩，因此分析脚本只显示整体前向，不给出无效的三个模块耗时。
 
 AMP 仅在 CUDA 前向启用 autocast，后处理输入恢复 FP32；CPU 保持普通精度。不需要 `.half()` 或 GradScaler。AMP 可能影响 AP，需同时比较精度和时间。两项优化默认均关闭，每次只改一项以便判断收益。
 
@@ -60,3 +62,17 @@ AMP 仅在 CUDA 前向启用 autocast，后处理输入恢复 FP32；CPU 保持�
 Graph 固定输入仍只由计算流写入，预取使用独立输入张量，不会覆盖 Graph 输出；最后不足一批仍走普通前向。正式入口和两个分析脚本共用该预取器，分析时 H2D Event 记录在拷贝流。
 
 `image_id.item()` 读取 CPU 数据，不是 GPU 同步点；结果 `.tolist()` 是 JSON 整理所需的回传同步，因此保留，并把下一批上传放在它之前。循环内没有新增全局 `torch.cuda.synchronize()`，只保留初始化及推理结束的同步。独立流提供重叠条件，实际重叠和端到端收益仍需用时间线及多轮计时判断。
+
+
+## TensorRT 后端
+
+一次性安装可选依赖并离线构建引擎（使用合成输入，不读取参考集）：
+
+```bash
+NVIDIA_TENSORRT_DISABLE_INTERNAL_PIP=1 .venv/bin/python -m pip install -r requirements-tensorrt.txt
+.venv/bin/python scripts/build_tensorrt.py --fp16
+```
+
+当前 `inference_config.py` 已设置 `backend="tensorrt"`，构建好引擎后直接运行 `bash ./benchmark_reference.sh`。改回 `"pytorch"` 即恢复原推理路径。引擎通过独立 `TensorRTRunner.forward(samples)` 在非默认 CUDA 流异步执行，并与调用流建立依赖，返回原有 logits/boxes，沿用原 FP32 后处理和 AP50 输出。可与异步预取配合；不会再叠加 PyTorch CUDA Graph 捕获。AMP 配置只影响 PyTorch；TensorRT 精度在构建时由 `--fp16` 决定。
+
+默认支持 batch 1～8，最后不足一批也直接由 TensorRT 执行；更大 batch 需用 `--max-batch-size` 重新构建。引擎及其 `.engine.json` 校验信息均保存在本地，包含配置/权重指纹、GPU、TensorRT 版本和引擎校验和；配置、权重或运行版本变化后必须重建，避免误用缓存。缺少引擎时明确报错，不静默回退 PyTorch。首次构建耗时不包含在 benchmark 中，每次测试仍先完整预热一轮再正式计时。

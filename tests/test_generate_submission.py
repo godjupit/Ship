@@ -55,6 +55,7 @@ class AMPTests(unittest.TestCase):
             with self.assertRaisesRegex(NotImplementedError, name):
                 InferenceConfig(**{name: True}).validate()
 
+    @patch.object(INFERENCE_CONFIG, "backend", "pytorch")
     def test_switch_defaults_off_and_cpu_stays_fp32(self):
         with patch.object(INFERENCE_CONFIG, "amp", False):
             self.assertFalse(amp_enabled("cuda:0"))
