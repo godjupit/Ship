@@ -6,33 +6,7 @@ from unittest.mock import patch
 
 import torch
 
-from supership.generate_submission import DevicePrefetcher, run_inference
-
-
-class PrefetchTests(unittest.TestCase):
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-    def test_cuda_order_partial_batch_and_source_lifetime(self):
-        def batches():
-            for count, value in [(2, 1), (2, 2), (1, 3), (2, 4)]:
-                yield torch.full((count, 3, 32, 32), float(value)), [
-                    {"orig_size": torch.tensor([value, value + 10])}
-                    for _ in range(count)
-                ]
-
-        snapshots = []
-        with DevicePrefetcher(batches(), "cuda:0") as prefetcher:
-            self.assertNotEqual(prefetcher.stream.cuda_stream,
-                                torch.cuda.current_stream().cuda_stream)
-            for samples, targets, sizes in prefetcher:
-                snapshots.append((samples.clone(), sizes.clone(), len(targets)))
-                prefetcher.preload_next()
-        for (samples, sizes, count), value in zip(snapshots, [1, 2, 3, 4]):
-            torch.testing.assert_close(samples.cpu(), torch.full((count, 3, 32, 32), float(value)))
-            torch.testing.assert_close(sizes.cpu(), torch.tensor([[value, value + 10]] * count))
-
-    def test_empty_loader(self):
-        with DevicePrefetcher([], "cpu") as prefetcher:
-            self.assertEqual(list(prefetcher), [])
+from supership.generate_submission import run_inference
 
 
 class SerializationTests(unittest.TestCase):

@@ -1,3 +1,11 @@
+## 当前生效版本
+
+只保留 `configs/dataset/supership_detection.yml` 的 worker 调整：train 和 val 均为 8，推理使用 val。已撤销 pinned memory、异步上传、独立 CUDA 拷贝流、手动缓冲区和集中回传。图片仍为 float32，推理在当前流直接 `.to(device)`。
+
+运行：`PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh`。
+
+以下为历史实验记录，其中优化描述不代表当前实现；原测试数据保留在 Git 提交说明及本地 output 中。
+
 ## 数据传输
 
 减少传输的数据量、提高 PCIe 传输效率、让数据传输与 GPU 计算重叠。
@@ -50,3 +58,9 @@ PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
 
 已撤销 `21ef3da` 的整批集中回传，恢复逐图 `.tolist()`，保留独立 CUDA 拷贝流。原因：正向测试快 10.82%，反向测试慢 1.58%，未证明稳定收益。测试明细仍保留在原提交说明和本地 output 报告中。
 撤销后 5 个测试通过，正式入口和两个分析脚本的语法检查通过；本次不重复性能测试。
+
+
+## 仅保留 worker 调整后的验证
+
+命令：`PYTHON_BIN=.venv/bin/python BATCH_SIZE=8 DEVICE=cuda:0 RUNS=3 bash ./benchmark_reference.sh`，之前预热 1 轮。正式 3 轮：4.322237553、4.308558031、4.324656330 秒，中位数 4.322237553 秒。3 份输出均与原始 baseline 完全一致，每份 60000 条。3 个测试通过，正式入口和两个分析脚本语法检查通过。
+结果：`output/worker-only-20261104-170549/comparison.json`。该测试用于验证回退后的版本，不是 worker=4/8 的同环境 A/B 对比，不能单独证明 worker 调整收益。

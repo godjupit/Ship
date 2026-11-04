@@ -1,4 +1,4 @@
-"""NVTX instrumentation using the production pinned-memory input transfers."""
+"""NVTX instrumentation for the production inference pipeline."""
 import argparse
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER
 
 BATCH = ContextVar('batch_id', default=None)
 IMAGE = ContextVar('image_id', default=None)
@@ -105,16 +105,19 @@ def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta
     results = []
     batches = (batch for _, batch in traced_batches(loader))
     section = lambda name, **kwargs: mark(name)
-    with torch.inference_mode(), DevicePrefetcher(batches, device, section) as prefetcher:
+    with torch.inference_mode()(batches, device, section) as prefetcher:
         for batch_id, (samples, targets, original_sizes) in enumerate(prefetcher):
             token = BATCH.set(batch_id)
             try:
                 with mark('batch_consume_total'):
+                    # 与正式入口一致，在当前流上传本批数据。
+                    with mark('h2d_submit'):
+                        samples = samples.to(device)
+                        original_sizes = torch.stack([t['orig_size'] for t in targets]).to(device)
                     with mark('gpu_forward_eager_submit'):
                         outputs = model(samples)
                     with mark('gpu_postprocess_submit'):
                         detections = postprocessor(outputs, original_sizes)
-                    prefetcher.preload_next()
                     for target, detection in zip(targets, detections):
                         image_id = target['image_id'].item()
                         with mark('d2h', image=image_id):
