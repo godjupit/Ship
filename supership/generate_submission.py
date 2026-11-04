@@ -137,7 +137,9 @@ def run_inference(
     output_path = os.path.abspath(output_file)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as output:
-        json.dump(results, output, separators=(",", ":"), allow_nan=False)
+        # Encode once to avoid streaming thousands of small Python writes.
+        payload = json.dumps(results, separators=(",", ":"), allow_nan=False)
+        output.write(payload)
         output.flush()
         os.fsync(output.fileno())
 
