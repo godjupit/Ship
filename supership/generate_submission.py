@@ -90,24 +90,6 @@ class DevicePrefetcher:
         self.close()
 
 
-def batch_detections_to_cpu(detections):
-    """按字段合并整批结果后回传，保留标签整数类型和每张图的检测数量。"""
-    if not detections:
-        return []
-    counts = [detection["scores"].shape[0] for detection in detections]
-    # 每个字段整批只回传一次，避免逐张图片触发小额 GPU→CPU 传输。
-    columns = {
-        key: torch.cat([detection[key] for detection in detections], dim=0).cpu().tolist()
-        for key in ("boxes", "scores", "labels")
-    }
-    result = []
-    offset = 0
-    for count in counts:
-        result.append({key: values[offset:offset + count] for key, values in columns.items()})
-        offset += count
-    return result
-
-
 def build_runtime(config_path, weights_path, device):
     from engine.core import YAMLConfig
     from engine.data.dataset.coco_dataset import CocoDetection  # noqa: F401
@@ -172,12 +154,12 @@ def run_inference(
             # 在结果回传阻塞 CPU 前上传下一批，争取与当前批 GPU 计算重叠。
             prefetcher.preload_next()
 
-            cpu_detections = batch_detections_to_cpu(detections)
-            for target, detection in zip(targets, cpu_detections):
+            for target, detection in zip(targets, detections):
                 image_id = target["image_id"].item()
-                boxes = detection["boxes"]
-                scores = detection["scores"]
-                labels = detection["labels"]
+                # Transfer all boxes once, avoiding one CUDA copy per query.
+                boxes = detection["boxes"].tolist()
+                scores = detection["scores"].tolist()
+                labels = detection["labels"].tolist()
                 for index, score in enumerate(scores):
                     x1, y1, x2, y2 = boxes[index]
                     width = round(x2 - x1, 2)

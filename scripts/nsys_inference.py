@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher, batch_detections_to_cpu
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher
 
 BATCH = ContextVar('batch_id', default=None)
 IMAGE = ContextVar('image_id', default=None)
@@ -115,14 +115,12 @@ def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta
                     with mark('gpu_postprocess_submit'):
                         detections = postprocessor(outputs, original_sizes)
                     prefetcher.preload_next()
-                    # 保留 d2h 阶段名，现按整个 batch 标记回传。
-                    with mark('d2h'):
-                        cpu_detections = batch_detections_to_cpu(detections)
-                    for target, detection in zip(targets, cpu_detections):
+                    for target, detection in zip(targets, detections):
                         image_id = target['image_id'].item()
-                        boxes = detection['boxes']
-                        scores = detection['scores']
-                        labels = detection['labels']
+                        with mark('d2h', image=image_id):
+                            boxes = detection['boxes'].tolist()
+                            scores = detection['scores'].tolist()
+                            labels = detection['labels'].tolist()
                         with mark('results_format', image=image_id):
                             for index, score in enumerate(scores):
                                 x1, y1, x2, y2 = boxes[index]

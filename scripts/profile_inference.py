@@ -12,7 +12,7 @@ import unicodedata
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher, batch_detections_to_cpu
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, DevicePrefetcher
 
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
@@ -133,12 +133,12 @@ def run_inference(
             prefetcher.preload_next()
 
             result_started = time.perf_counter() if timing.enabled else 0.0
-            cpu_detections = batch_detections_to_cpu(detections)
-            for target, detection in zip(targets, cpu_detections):
+            for target, detection in zip(targets, detections):
                 image_id = target["image_id"].item()
-                boxes = detection["boxes"]
-                scores = detection["scores"]
-                labels = detection["labels"]
+                # Transfer all boxes once, avoiding one CUDA copy per query.
+                boxes = detection["boxes"].tolist()
+                scores = detection["scores"].tolist()
+                labels = detection["labels"].tolist()
                 for index, score in enumerate(scores):
                     x1, y1, x2, y2 = boxes[index]
                     width = round(x2 - x1, 2)

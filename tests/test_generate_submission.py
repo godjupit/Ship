@@ -6,29 +6,7 @@ from unittest.mock import patch
 
 import torch
 
-from supership.generate_submission import DevicePrefetcher, batch_detections_to_cpu, run_inference
-
-
-class BatchTransferTests(unittest.TestCase):
-    def check_transfer(self, device):
-        """覆盖空检测、不同检测数量，以及不能精确转成 float32 的整数标签。"""
-        detections = [
-            {"boxes": torch.tensor([[-0.0, 1., 2., 3.]] * count, device=device).reshape(count, 4),
-             "scores": torch.full((count,), 0.123456, device=device),
-             "labels": torch.full((count,), 2**40 + 1, dtype=torch.int64, device=device)}
-            for count in [2, 0, 1]
-        ]
-        expected = [{key: value.tolist() for key, value in detection.items()}
-                    for detection in detections]
-        self.assertEqual(json.dumps(batch_detections_to_cpu(detections)), json.dumps(expected))
-        self.assertEqual(batch_detections_to_cpu([]), [])
-
-    def test_cpu_variable_counts(self):
-        self.check_transfer("cpu")
-
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
-    def test_cuda_variable_counts(self):
-        self.check_transfer("cuda:0")
+from supership.generate_submission import DevicePrefetcher, run_inference
 
 
 class PrefetchTests(unittest.TestCase):
