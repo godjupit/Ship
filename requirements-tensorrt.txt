@@ -1,3 +1,5 @@
 # Optional build/runtime dependencies; preserve the project's CUDA 12.4 PyTorch.
 onnx==1.17.0
 tensorrt-cu12==10.0.1
+# CUDA Driver bindings for the standalone worker (no PyTorch runtime imports).
+cuda-bindings==13.4.4

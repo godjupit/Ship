@@ -218,6 +218,8 @@ weights/*.pth
 weights/*.pt
 weights/*.engine.json
 weights/*.engine.tmp
+weights/*.ptx
+weights/*.ptx.json
 *.onnx
 *.plan
 *.whl

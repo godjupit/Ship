@@ -20,6 +20,9 @@ if [[ "${HOST_THP:-1}" == "1" && "$OSTYPE" == linux* ]]; then
 fi
 
 if [[ "${PIPELINE:-standard}" == "fast" ]]; then
+  if [[ "${BACKEND:-}" == "tensorrt" && "${TRT_STANDALONE:-0}" == "1" ]]; then
+    exec "$PYTHON_BIN" supership/trt_worker.py "$@"
+  fi
   exec "$PYTHON_BIN" supership/fast_worker.py "$@"
 fi
 

@@ -8,35 +8,34 @@ source activate_env.sh
 
 ## 正式推理
 
-默认入口 `run.sh` 使用 `supership/fast_worker.py`，配置集中在 `configs/fastest.env`，调用方的环境变量优先。当前默认 PyTorch CUDA Graph / FP16，输入 544×544，batch 8，OpenCV JPEG 缩小解码（2），top100，置信度阈值 0.05。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时默认 6 个。`NUM_WORKERS` 控制解码线程数，YAML 的 DataLoader worker 数不控制 fast 流水线。
+默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、512×512、batch 8、100 个解码查询、top100、置信度阈值 0.05，OpenCV RGB 缩小解码（2）。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
+
+首次构建需要已有 CUDA PyTorch 环境、`requirements-fast.txt`、`requirements-tensorrt.txt` 和 CUDA Toolkit 的 `nvcc`：
 
 ```bash
+python scripts/build_tensorrt.py --side 512 --num-queries 100 --output weights/supership-512-q100.engine
+python scripts/build_trt_kernels.py
 bash benchmark_reference.sh
 ```
 
-基准测试先预热一次，再正式运行三轮，并在计时外输出 AP50。`RUNS` 控制正式轮数，`OUTPUT_FILE` 指定输出位置，`COMPARE_ACCURACY=False` 关闭评分。比较实验应使用独立输出目录。
+构建仅使用原始权重和合成输入。离线部署需携带 `weights/baseline.pth`、上述 `.engine`、`weights/trt_preprocess.ptx` 及两者同名 `.json` 校验文件。运行时不调用编译器、不访问网络；检查引擎、权重、PTX、CUDA 源码校验和、GPU、TensorRT 版本和输入形状。改变输入尺寸、batch 或查询数必须重新构建引擎。`TRT_ENGINE`、`TRT_KERNELS` 可覆盖产物路径。
 
-`configs/dfine/dfine_hgnetv2_s_supership.yml` 的 640 尺寸用于加载原始权重；fast worker 随后根据 `INPUT_SIZE` 重建位置编码和 anchors。修改 fast 输入尺寸使用 `INPUT_SIZE`，无需 TensorRT 引擎。
+所有评测数据在 READY 后读取。输入和输出使用有界 pinned 缓冲区；事件分别保护 H2D 输入复用和 D2H 输出读取。CUDA Graph 包含归一化、推理和 sigmoid；CPU 线程完成 top-k、坐标换算和 JSON 序列化。尾批补零，只写出真实图像。全部任务完成、输出 fsync 并关闭后才退出。独立运行时固定使用 RGB 解码和线程化 JSON；原 PyTorch 路径的算子开关不适用于它。
 
-```bash
-INPUT_SIZE=576 IMAGE_DECODER=pil JPEG_REDUCTION=1 POST_TOP_QUERIES=300 SCORE_THRESHOLD=0 bash benchmark_reference.sh
-```
+基准测试先预热一次，再正式运行三轮，并在计时外输出 AP50。`RUNS` 控制正式轮数，`OUTPUT_FILE` 指定输出位置，`COMPARE_ACCURACY=False` 关闭评分。比较实验应使用独立输出目录。200 张参考集交错三轮对照：旧 544 TensorRT 路径中位数 0.21632 秒，独立 512/100-query 路径 0.16537 秒；AP50 为 0.7824626。该精度和性能不代表隐藏测试集。
 
-上述命令使用实验中较保守的精度配置。`PIPELINE=standard` 可运行普通 PyTorch 640 FP32 路径。旧 TensorRT 推理和配套实验脚本可从 Git 历史查看；不再作为当前默认配置。
-
-### TensorRT 544 候选
-
-快速流水线支持可选 TensorRT 后端，仍保留现有读图、后处理、JSON 写出及 CUDA Graph。先安装 `requirements-tensorrt.txt`，用 `python scripts/build_tensorrt.py` 离线构建静态 544、batch 8 的 FP16 引擎。构建仅使用权重及合成输入。运行：
+保留原路径用于对照：
 
 ```bash
-BACKEND=tensorrt RUNS=3 bash benchmark_reference.sh
+# 原 PyTorch 544 CUDA Graph
+BACKEND=cuda_graph bash benchmark_reference.sh
+# 原 TensorRT 544 引擎，由 PyTorch 管理缓冲区和后处理
+BACKEND=tensorrt TRT_STANDALONE=0 INPUT_SIZE=544 TRT_ENGINE=weights/supership-544.engine bash benchmark_reference.sh
+# 普通 PyTorch 640 FP32
+PIPELINE=standard bash benchmark_reference.sh
 ```
 
-`TRT_ENGINE` 默认 `weights/supership-544.engine`，须同时携带同名 `.json` 校验文件。运行时检查权重、引擎校验和、GPU、TensorRT 版本及输入形状；尾批补零至构建 batch，写出时仅保留真实图片。修改输入大小或 batch 后需重新构建。TensorRT 的数值结果可能与 PyTorch FP16 不同，必须另行评估 AP50。
-
-TensorRT 预设使用 `OPENCV_COPY_MODE=rgb`（需要 `requirements-fast.txt` 中的 OpenCV 4.11），直接解码 RGB 并缩放到 pinned 输入，省去独立的 BGR→RGB 转换。`GPU_BGR=1` 仍使用 BGR 输入。可用 `OPENCV_COPY_MODE=cvtcolor` 对照旧路径；200 张参考集三轮交错测试中位数从 0.23334 秒降至 0.21775 秒，输出逐字节一致。该对照不代表隐藏集性能。
-
-快速流水线额外依赖见 `requirements-fast.txt`，在现有 CUDA PyTorch 环境中安装。新增流水线测试使用 pytest；完整验证运行 `python -m pytest tests -q`，原有 unittest 测试仍可运行。
+PyTorch fast worker 的 YAML 640 尺寸用于严格加载权重，再根据 `INPUT_SIZE` 重建几何参数。`NUM_WORKERS` 控制解码线程；YAML DataLoader worker 不控制此流水线。完整验证使用 `python -m pytest tests -q`，也保留 `python -m unittest discover -s tests -v`。
 
 历史推理结果保存在 `output/`，分析产物保存在 `analysis/`，不进入提交。544 组合改变了解码、分辨率和后处理工作量，精度与性能需一起评估；参考集结果不能保证隐藏集精度达标。
 

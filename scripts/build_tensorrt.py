@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--output", default="weights/supership-544.engine")
     parser.add_argument("--side", type=int, default=544)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--num-queries", type=int, default=0,
+                        help="reduce decoder queries before export; 0 keeps the checkpoint default")
     args = parser.parse_args()
     if not 320 <= args.side <= 1280 or args.side % 32 or args.batch_size < 1:
         parser.error("side must be a multiple of 32 in [320, 1280]; batch must be positive")
@@ -50,6 +52,11 @@ def main():
         )
         setattr(encoder, f"pos_embed{index}", position)
     decoder.anchors, decoder.valid_mask = decoder._generate_anchors(device="cuda:0")
+    if args.num_queries:
+        if not 1 <= args.num_queries <= decoder.num_queries or decoder.learn_query_content:
+            parser.error("query reduction requires unlearned query content and a valid count")
+        decoder.num_queries = args.num_queries
+    num_queries = decoder.num_queries
     model.deploy().eval()
     shape = (args.batch_size, 3, args.side, args.side)
     with torch.inference_mode():
@@ -86,6 +93,7 @@ def main():
         "engine_sha256": hashlib.sha256(data).hexdigest(),
         "gpu": torch.cuda.get_device_name(), "tensorrt": trt.__version__,
         "input_shape": list(shape),
+        "num_queries": num_queries,
     }
     Path(str(output) + ".json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Built {output}", flush=True)

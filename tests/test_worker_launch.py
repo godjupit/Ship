@@ -24,7 +24,7 @@ def test_allocator_environment_at_worker_start(tmp_path, pipeline, host_thp, tun
                           'print(json.dumps([os.environ.get("GLIBC_TUNABLES"),sys.argv[1]]))\n')
     executable.chmod(0o755)
     env = os.environ.copy()
-    for key in ['HOST_THP', 'GLIBC_TUNABLES']:
+    for key in ['HOST_THP', 'GLIBC_TUNABLES', 'BACKEND', 'TRT_STANDALONE']:
         env.pop(key, None)
     env.update(PYTHON_BIN=str(executable), PIPELINE=pipeline)
     if host_thp is not None:
@@ -35,7 +35,7 @@ def test_allocator_environment_at_worker_start(tmp_path, pipeline, host_thp, tun
                             capture_output=True, text=True, check=True)
     actual, worker = json.loads(result.stdout)
     assert actual == expected
-    assert worker == ('supership/fast_worker.py' if pipeline == 'fast'
+    assert worker == ('supership/trt_worker.py' if pipeline == 'fast'
                       else 'supership/generate_submission.py')
 
 
@@ -52,6 +52,8 @@ def test_default_launcher_selects_verified_fastest_and_preserves_overrides(tmp_p
     keys = ['PIPELINE', 'INPUT_SIZE', 'NUM_WORKERS', 'THREADED_JSON', 'POST_TOP_QUERIES', 'INFERENCE_IMPORTS']
     for key in keys:
         env.pop(key, None)
+    for key in ['BACKEND', 'TRT_STANDALONE', 'TRT_ENGINE']:
+        env.pop(key, None)
     env.pop('SLURM_CPUS_PER_TASK', None)
     if allocated_cpus is not None:
         env['SLURM_CPUS_PER_TASK'] = allocated_cpus
@@ -59,7 +61,7 @@ def test_default_launcher_selects_verified_fastest_and_preserves_overrides(tmp_p
     result = subprocess.run(['bash', str(ROOT / entrypoint), '--worker'], env=env,
                             capture_output=True, text=True, check=True)
     worker, config = json.loads(result.stdout)
-    assert worker == ('supership/fast_worker.py' if entrypoint == 'run.sh'
+    assert worker == ('supership/trt_worker.py' if entrypoint == 'run.sh'
                       else 'supership/benchmark_submission.py')
-    assert config == dict(PIPELINE='fast', INPUT_SIZE='544', NUM_WORKERS=workers,
+    assert config == dict(PIPELINE='fast', INPUT_SIZE='512', NUM_WORKERS=workers,
                           THREADED_JSON='1', POST_TOP_QUERIES='100', INFERENCE_IMPORTS='1') | overrides
