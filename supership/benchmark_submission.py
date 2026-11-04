@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--init-timeout", type=float, default=300.0)
     parser.add_argument("--run-timeout", type=float, default=3600.0)
+    parser.add_argument("--accuracy-gt", help="reference ground truth for per-run AP50 reporting")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command and args.command[0] == "--":
@@ -243,6 +244,12 @@ def run_once(args, run_index):
 
 def main():
     args = parse_args()
+    # 仅参考集脚本启用评分，正式 worker 和通用计时默认不需要标注。
+    if args.accuracy_gt:
+        if __package__:
+            from .compare_reference import REFERENCE_AP50, score_predictions
+        else:
+            from compare_reference import REFERENCE_AP50, score_predictions
     durations = []
     for run_index in range(args.runs):
         elapsed, output_file, detection_count = run_once(args, run_index)
@@ -252,6 +259,10 @@ def main():
             f"{detection_count} detections, {output_file}",
             flush=True,
         )
+        if args.accuracy_gt:
+            # run_once 已结束计时；只补充用户需要的一行，保留原汇总结构。
+            ap50 = score_predictions(output_file, args.accuracy_gt)["AP50"]
+            print(f"AP50 / baseline = {ap50:.6f} / {REFERENCE_AP50:.6f}", flush=True)
 
     report = {
         "runs_seconds": durations,

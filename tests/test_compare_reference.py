@@ -1,30 +1,31 @@
 """验证 AP 比较使用真实 COCO 评分，且差值方向正确。"""
 import json
+import contextlib
+import io
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from supership.compare_reference import (
-    REFERENCE_BASELINE, accuracy_difference, reference_accuracy_check, score_predictions,
-)
+from supership.compare_reference import score_predictions
+from supership.benchmark_submission import main as benchmark_main
 
 
 class AccuracyComparisonTests(unittest.TestCase):
-    def test_reference_threshold_boundary(self):
-        threshold = 0.98 * REFERENCE_BASELINE["AP50"]
-        self.assertTrue(reference_accuracy_check({"AP50": threshold})["passed"])
-        self.assertAlmostEqual(reference_accuracy_check({"AP50": threshold})["ap50_ratio"], 0.98)
-        self.assertEqual(reference_accuracy_check({"AP50": REFERENCE_BASELINE["AP50"]})["ap50_ratio"], 1)
-        self.assertFalse(reference_accuracy_check({"AP50": threshold - 1e-8})["passed"])
-        # 验证集 0.916 的阈值不能用来判定 200 张参考集。
-        self.assertLess(threshold, 0.8)
-
-    def test_difference_direction(self):
-        delta = accuracy_difference({"mAP": 0.6, "AP50": 0.9, "AP75": 0.8},
-                                    {"mAP": 0.7, "AP50": 0.9, "AP75": 0.7})
-        self.assertAlmostEqual(delta["mAP"], -0.1)
-        self.assertEqual(delta["AP50"], 0)
-        self.assertAlmostEqual(delta["AP75"], 0.1)
+    def test_benchmark_adds_only_requested_ap50_line(self):
+        args = SimpleNamespace(runs=1, accuracy_gt="gt.json")
+        captured = io.StringIO()
+        with patch("supership.benchmark_submission.parse_args", return_value=args), \
+             patch("supership.benchmark_submission.run_once", return_value=(1.25, "result.json", 3)), \
+             patch("supership.compare_reference.score_predictions", return_value={"AP50": 0.79}), \
+             contextlib.redirect_stdout(captured):
+            benchmark_main()
+        lines = captured.getvalue().splitlines()
+        self.assertEqual(lines[0], "run 1/1: 1.250000 s, 3 detections, result.json")
+        self.assertEqual(lines[1], "AP50 / baseline = 0.790000 / 0.793473")
+        self.assertEqual(json.loads(lines[2]), {"runs_seconds": [1.25], "median_seconds": 1.25})
+        self.assertEqual(len(lines), 3)
 
     def test_perfect_and_missing_predictions(self):
         with tempfile.TemporaryDirectory() as directory:
