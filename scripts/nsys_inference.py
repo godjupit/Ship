@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model
 
 BATCH = ContextVar('batch_id', default=None)
 IMAGE = ContextVar('image_id', default=None)
@@ -102,6 +102,7 @@ def instrument_graph_replay():
 def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta_file, output_file):
     with mark('loader_create'):
         loader = instrument_loader(create_loader(cfg, image_dir, meta_file, batch_size), batch_size)
+    use_amp = amp_enabled(device)
     results = []
     with torch.inference_mode():
         for batch_id, (samples, targets) in traced_batches(loader):
@@ -113,7 +114,7 @@ def run_inference(cfg, model, postprocessor, device, batch_size, image_dir, meta
                         samples = samples.to(device)
                         original_sizes = torch.stack([t['orig_size'] for t in targets]).to(device)
                     with mark('gpu_forward_eager_submit'):
-                        outputs = model(samples)
+                        outputs = forward_model(model, samples, use_amp)
                     with mark('gpu_postprocess_submit'):
                         detections = postprocessor(outputs, original_sizes)
                     for target, detection in zip(targets, detections):

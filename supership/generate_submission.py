@@ -18,6 +18,24 @@ import torch
 READY_MARKER = "THU_RS_READY"
 
 
+def amp_enabled(device):
+    """默认关闭 AMP；仅 CUDA 设备且 ENABLE_AMP=True/1/yes 时启用。"""
+    switch = os.environ.get("ENABLE_AMP", "False").strip().lower()
+    return torch.device(device).type == "cuda" and switch in ("true", "1", "yes")
+
+
+def forward_model(model, samples, use_amp=False):
+    """仅前向使用自动混合精度，后处理所需的类别和坐标恢复 FP32。"""
+    if not use_amp:
+        return model(samples)
+    # 不需要 model.half() 或 GradScaler，autocast 自动选择算子精度。
+    with torch.autocast(device_type="cuda", dtype=torch.float16):
+        outputs = model(samples)
+    # FP32 后处理不会消除前向的数值差异，因此 AMP 必须重新评估 AP。
+    return {**outputs, "pred_logits": outputs["pred_logits"].float(),
+            "pred_boxes": outputs["pred_boxes"].float()}
+
+
 def build_runtime(config_path, weights_path, device):
     from engine.core import YAMLConfig
     from engine.data.dataset.coco_dataset import CocoDetection  # noqa: F401
@@ -74,6 +92,7 @@ def run_inference(
 ):
     # Loader creation is timed because it reads the evaluation metadata.
     loader = create_loader(cfg, image_dir, meta_file, batch_size)
+    use_amp = amp_enabled(device)
     results = []
 
     with torch.inference_mode():
@@ -82,7 +101,7 @@ def run_inference(
             original_sizes = torch.stack(
                 [target["orig_size"] for target in targets], dim=0
             ).to(device)
-            outputs = model(samples)
+            outputs = forward_model(model, samples, use_amp)
             detections = postprocessor(outputs, original_sizes)
 
             for target, detection in zip(targets, detections):

@@ -12,7 +12,7 @@ import unicodedata
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER
+from supership.generate_submission import build_runtime, create_loader, read_worker_request, READY_MARKER, amp_enabled, forward_model
 
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
@@ -163,6 +163,7 @@ def run_inference(
     timing = StageTimings(device)
     with timing.section("loader_create"):
         loader = create_loader(cfg, image_dir, meta_file, batch_size)
+    use_amp = amp_enabled(device)
     results = []
 
     previous_batch_end = time.perf_counter() if timing.enabled else 0.0
@@ -180,7 +181,7 @@ def run_inference(
                 samples = samples.to(device)
                 original_sizes = torch.stack([t["orig_size"] for t in targets]).to(device)
             with timing.section("forward", gpu=True):
-                outputs = model(samples)
+                outputs = forward_model(model, samples, use_amp)
             with timing.section("postprocess", gpu=True):
                 detections = postprocessor(outputs, original_sizes)
 
@@ -229,6 +230,7 @@ def run_inference(
         num_workers=getattr(loader, "num_workers", 0),
         pin_memory=getattr(loader, "pin_memory", False),
         batch_size=batch_size,
+        amp_enabled=use_amp,
     )
     Path(output_file).with_suffix(".timing.json").write_text(
         json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",

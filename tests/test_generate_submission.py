@@ -6,7 +6,37 @@ from unittest.mock import patch
 
 import torch
 
-from supership.generate_submission import run_inference
+from supership.generate_submission import amp_enabled, forward_model, run_inference
+
+
+class AMPTests(unittest.TestCase):
+    def test_switch_defaults_off_and_cpu_stays_fp32(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(amp_enabled("cuda:0"))
+        with patch.dict("os.environ", {"ENABLE_AMP": "True"}):
+            self.assertTrue(amp_enabled("cuda:0"))
+            self.assertFalse(amp_enabled("cpu"))
+
+    def test_disabled_preserves_original_output(self):
+        outputs = {"pred_logits": torch.ones(1), "pred_boxes": torch.ones(1)}
+        self.assertIs(forward_model(lambda samples: outputs, torch.ones(1)), outputs)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_cuda_forward_uses_half_and_returns_float_postprocessing_inputs(self):
+        layer = torch.nn.Linear(4, 4).cuda().eval()
+        observed = []
+
+        def model(samples):
+            result = layer(samples)
+            observed.append(result.dtype)
+            return {"pred_logits": result, "pred_boxes": result, "extra": 7}
+
+        with torch.inference_mode():
+            outputs = forward_model(model, torch.ones(2, 4, device="cuda"), True)
+        self.assertEqual(observed, [torch.float16])
+        self.assertEqual(outputs["pred_logits"].dtype, torch.float32)
+        self.assertEqual(outputs["pred_boxes"].dtype, torch.float32)
+        self.assertEqual(outputs["extra"], 7)
 
 
 class SerializationTests(unittest.TestCase):

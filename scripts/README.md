@@ -43,3 +43,17 @@ ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --output anal
 ## 计时开关
 
 `ENABLE_PROFILING` 默认是 `False`；设为 `True`（也支持 `1`、`yes`）才会注册模块挂钩、创建 CUDA Event 和统计分项。关闭后只保留 benchmark 的端到端时间，JSON 标记 `profiling_enabled: false`，不输出虚假的零耗时。正式 `bash ./benchmark_reference.sh` 始终不使用分析脚本，因此不受该开关影响。
+
+
+## FP16 自动混合精度
+
+默认 `ENABLE_AMP=False`；`True`、`1` 或 `yes` 在 CUDA 上开启。CPU 自动保持原精度。正式入口和两个分析脚本共用 `forward_model()`：只在前向使用 autocast，类别输出和框坐标转回 FP32 后处理；不需要 `.half()` 或 GradScaler。
+
+```bash
+ENABLE_AMP=False PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
+ENABLE_AMP=True PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
+# 分析 AMP 下三个模块的耗时：
+ENABLE_AMP=True ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --output analysis/amp-modules/submission.json
+```
+
+两组先分别预热，并单独保存输出，避免默认文件被覆盖。AMP 会产生数值差异，需用 `bash ./score_reference.sh 对应结果.json` 比较 AP，不能只看速度。`ENABLE_PROFILING` 与 `ENABLE_AMP` 独立，正式 benchmark 不加载分项计时代码。
