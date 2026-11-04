@@ -62,11 +62,11 @@ ENABLE_AMP=True ENABLE_PROFILING=True python scripts/profile_inference.py --runs
 ## 推理后检查参考集精度
 
 ```bash
-COMPARE_ACCURACY=True ENABLE_AMP=True PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
+PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
 ```
 
 只运行当前版本，不额外运行 baseline。每轮推理结束后用参考集真实标注评分，打印 mAP、AP50、AP75 与固定参考基准的差值，以及本地 AP50 门槛是否通过。评分不计入推理时间，记录保存到 `output/accuracy-compare-时间戳/comparison.json`，不会覆盖默认输出。
 
 官网规定同一隐藏测试集上 AP50 不低于 baseline 的 98%；0.916 是验证集基准，不能用于判断 200 张参考集。本地使用已有 FP32 基准 AP50=0.7934734479978975，参考集阈值约 0.777604。通过本地检查不代表通过隐藏集评测；数据集和权重更换后需重新确定对应基准。
 
-`COMPARE_ACCURACY` 默认关闭，普通 benchmark 不评分。普通模式可通过 `OUTPUT_FILE` 指定输出位置。比较模式保留每轮计时，并且只打印一次最终计时 JSON 汇总。
+`bash ./benchmark_reference.sh` 默认逐轮打印“当前 AP50 / baseline”及百分比；无需额外开启对比开关。设 `COMPARE_ACCURACY=False` 可只计时、不评分，此模式可通过 `OUTPUT_FILE` 指定输出位置。默认比较模式保留每轮计时，并且只打印一次最终计时 JSON 汇总。

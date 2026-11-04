@@ -7,7 +7,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 mkdir -p output
 
 # 精度对比需要参考集标注，交给独立脚本执行，评分不进入推理计时。
-case "${COMPARE_ACCURACY:-False}" in
+case "${COMPARE_ACCURACY:-True}" in
   True|true|1|yes)
     exec "$PYTHON_BIN" -m supership.compare_reference
     ;;

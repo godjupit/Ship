@@ -13,6 +13,8 @@ class AccuracyComparisonTests(unittest.TestCase):
     def test_reference_threshold_boundary(self):
         threshold = 0.98 * REFERENCE_BASELINE["AP50"]
         self.assertTrue(reference_accuracy_check({"AP50": threshold})["passed"])
+        self.assertAlmostEqual(reference_accuracy_check({"AP50": threshold})["ap50_ratio"], 0.98)
+        self.assertEqual(reference_accuracy_check({"AP50": REFERENCE_BASELINE["AP50"]})["ap50_ratio"], 1)
         self.assertFalse(reference_accuracy_check({"AP50": threshold - 1e-8})["passed"])
         # 验证集 0.916 的阈值不能用来判定 200 张参考集。
         self.assertLess(threshold, 0.8)

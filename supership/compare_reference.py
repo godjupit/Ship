@@ -24,7 +24,8 @@ RULE_SOURCE = "https://lab.cs.tsinghua.edu.cn/scc/Applications/SuperShip/#_16"
 def reference_accuracy_check(metrics):
     """只判定本地参考集阈值，不宣称满足未知隐藏集的正式精度门槛。"""
     threshold = RETENTION_RATIO * REFERENCE_BASELINE["AP50"]
-    return {"ap50_threshold": threshold, "passed": metrics["AP50"] >= threshold}
+    return {"ap50_threshold": threshold, "passed": metrics["AP50"] >= threshold,
+            "ap50_ratio": metrics["AP50"] / REFERENCE_BASELINE["AP50"]}
 
 
 def score_predictions(submission, ground_truth):
@@ -86,6 +87,10 @@ def main():
         comparisons.append({"submission": path, "metrics": metrics, "delta": delta,
                             "reference_accuracy_check": check})
         print(f"第 {index + 1} 轮：")
+        # 用比值直接显示精度保留率；0.98 对应保留 baseline 的 98%。
+        print(f"  当前 AP50 / baseline = {metrics['AP50']:.6f} / "
+              f"{baseline_metrics['AP50']:.6f} = {check['ap50_ratio']:.6f} "
+              f"({check['ap50_ratio']:.2%})")
         for name in ("mAP", "AP50", "AP75"):
             print(f"  {name:4s} 基准 {baseline_metrics[name]:.6f}  "
                   f"当前 {metrics[name]:.6f}  差值 {delta[name]:+.6f}")
