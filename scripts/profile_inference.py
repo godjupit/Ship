@@ -17,12 +17,16 @@ from supership.generate_submission import build_runtime, create_loader, read_wor
 class StageTimings:
     """Host wall times and CUDA stream times, without per-stage sync."""
 
-    def __init__(self, device):
-        self.enabled = True
+    def __init__(self, device, enabled=None):
+        # 默认关闭；环境变量会自动传给 benchmark 启动的 worker 子进程。
+        if enabled is None:
+            switch = os.environ.get("ENABLE_PROFILING", "False").strip().lower()
+            enabled = switch in ("1", "true", "yes")
+        self.enabled = bool(enabled)
         self.device = torch.device(device)
         self.wall = {}
         self.events = []
-        self.started = time.perf_counter()
+        self.started = time.perf_counter() if self.enabled else 0.0
         self.batches = 0
         self.images = 0
         self.h2d_bytes = 0
@@ -53,6 +57,10 @@ class StageTimings:
     @contextmanager
     def modules(self, model):
         """临时挂钩三个模块的输入和输出，测量时间但不改 forward 或张量。"""
+        if not self.enabled:
+            # 关闭时完全不注册挂钩，也不创建 CUDA Event。
+            yield
+            return
         handles = []
 
         def attach(name, module):
@@ -88,8 +96,9 @@ class StageTimings:
 
     def report(self):
         if not self.enabled:
-            return
+            return {"profiling_enabled": False}
         values = dict(self.wall)
+        values["profiling_enabled"] = True
         # run_inference has already synchronized CUDA before writing output.
         for name, start, end in self.events:
             values[name] = values.get(name, 0.0) + start.elapsed_time(end) / 1000.0
@@ -156,10 +165,11 @@ def run_inference(
         loader = create_loader(cfg, image_dir, meta_file, batch_size)
     results = []
 
-    previous_batch_end = time.perf_counter()
+    previous_batch_end = time.perf_counter() if timing.enabled else 0.0
     with torch.inference_mode(), timing.modules(model):
         for samples, targets in loader:
-            timing.add_wall("loader_wait", time.perf_counter() - previous_batch_end)
+            if timing.enabled:
+                timing.add_wall("loader_wait", time.perf_counter() - previous_batch_end)
             if timing.enabled:
                 timing.batches += 1
                 timing.images += len(targets)
@@ -199,8 +209,9 @@ def run_inference(
                         }
                     )
 
-            timing.add_wall("results", time.perf_counter() - result_started)
-            previous_batch_end = time.perf_counter()
+            if timing.enabled:
+                timing.add_wall("results", time.perf_counter() - result_started)
+                previous_batch_end = time.perf_counter()
 
     if str(device).startswith("cuda"):
         torch.cuda.synchronize(device)

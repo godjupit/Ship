@@ -4,13 +4,13 @@
 
 ```bash
 source activate_env.sh
-python scripts/profile_inference.py
+ENABLE_PROFILING=True python scripts/profile_inference.py
 ```
 
 默认对 200 张参考图像运行一次，检测结果写入 `analysis/profile_submission.json`。
 
 ```bash
-python scripts/profile_inference.py --runs 3 --batch-size 8
+ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --batch-size 8
 ```
 
 每轮打印中文分项表格，包含累计秒数、平均每批毫秒数和输入传输量；末尾打印每轮端到端耗时及中位数。各项对应含义：
@@ -32,9 +32,14 @@ GPU 阶段使用 CUDA Event，最后统一读取，不逐阶段增加同步。CP
 ## 模型三个模块的耗时
 
 ```bash
-python scripts/profile_inference.py --runs 3 --output analysis/module-timings/submission.json
+ENABLE_PROFILING=True python scripts/profile_inference.py --runs 3 --output analysis/module-timings/submission.json
 ```
 
 在“模型前向计算”下查看 Backbone（特征提取）、Encoder（特征融合）、Decoder（检测预测）的累计秒数和平均每批毫秒数。脚本临时注册模块执行前后的挂钩，不修改模型 forward；CUDA Event 记录当前 GPU 流，最后统一读取，CPU 使用主机时钟。对应 JSON 字段为 `backbone_gpu_s`、`encoder_gpu_s`、`decoder_gpu_s`（CPU 后缀为 `_wall_s`）。
 
 三个模块是模型前向的子项，不能与前向总时间重复相加。分项包含首批冷启动、CPU 提交间隔及计时挂钩开销，用于定位瓶颈；正式端到端性能仍使用 `bash ./benchmark_reference.sh`。相同输出目录会覆盖旧报告。
+
+
+## 计时开关
+
+`ENABLE_PROFILING` 默认是 `False`；设为 `True`（也支持 `1`、`yes`）才会注册模块挂钩、创建 CUDA Event 和统计分项。关闭后只保留 benchmark 的端到端时间，JSON 标记 `profiling_enabled: false`，不输出虚假的零耗时。正式 `bash ./benchmark_reference.sh` 始终不使用分析脚本，因此不受该开关影响。

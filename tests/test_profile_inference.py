@@ -2,6 +2,7 @@
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -23,7 +24,7 @@ class ModuleTimingTests(unittest.TestCase):
     def check_timings(self, device):
         model = TinyModel().to(device).eval()
         samples = torch.ones(2, 4, device=device)
-        timing = StageTimings(device)
+        timing = StageTimings(device, enabled=True)
         with torch.inference_mode():
             expected = model(samples)
             with timing.modules(model):
@@ -49,8 +50,28 @@ class ModuleTimingTests(unittest.TestCase):
     def test_exception_removes_hooks(self):
         model = TinyModel()
         with self.assertRaises(RuntimeError):
-            with StageTimings("cpu").modules(model):
+            with StageTimings("cpu", enabled=True).modules(model):
                 model(torch.ones(2, 9))
         for module in (model.backbone, model.encoder, model.decoder):
             self.assertFalse(module._forward_hooks)
             self.assertFalse(module._forward_pre_hooks)
+
+
+    def test_disabled_has_no_hooks_or_events(self):
+        with patch.dict("os.environ", {"ENABLE_PROFILING": "False"}):
+            timing = StageTimings("cuda:0")
+        model = TinyModel()
+        with patch("torch.cuda.Event", side_effect=AssertionError("unexpected event")):
+            with timing.modules(model), timing.section("forward", gpu=True):
+                for module in (model.backbone, model.encoder, model.decoder):
+                    self.assertFalse(module._forward_hooks)
+                    self.assertFalse(module._forward_pre_hooks)
+                model(torch.ones(2, 4))
+        self.assertEqual(timing.events, [])
+        self.assertEqual(timing.report(), {"profiling_enabled": False})
+
+    def test_environment_switch(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(StageTimings("cpu").enabled)
+        with patch.dict("os.environ", {"ENABLE_PROFILING": "True"}):
+            self.assertTrue(StageTimings("cpu").enabled)
