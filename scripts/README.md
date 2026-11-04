@@ -24,6 +24,16 @@ INPUT_SIZE=576 IMAGE_DECODER=pil JPEG_REDUCTION=1 POST_TOP_QUERIES=300 SCORE_THR
 
 上述命令使用实验中较保守的精度配置。`PIPELINE=standard` 可运行普通 PyTorch 640 FP32 路径。旧 TensorRT 推理和配套实验脚本可从 Git 历史查看；不再作为当前默认配置。
 
+### TensorRT 544 候选
+
+快速流水线支持可选 TensorRT 后端，仍保留现有读图、后处理、JSON 写出及 CUDA Graph。先安装 `requirements-tensorrt.txt`，用 `python scripts/build_tensorrt.py` 离线构建静态 544、batch 8 的 FP16 引擎。构建仅使用权重及合成输入。运行：
+
+```bash
+BACKEND=tensorrt RUNS=3 bash benchmark_reference.sh
+```
+
+`TRT_ENGINE` 默认 `weights/supership-544.engine`，须同时携带同名 `.json` 校验文件。运行时检查权重、引擎校验和、GPU、TensorRT 版本及输入形状；尾批补零至构建 batch，写出时仅保留真实图片。修改输入大小或 batch 后需重新构建。TensorRT 的数值结果可能与 PyTorch FP16 不同，必须另行评估 AP50。
+
 快速流水线额外依赖见 `requirements-fast.txt`，在现有 CUDA PyTorch 环境中安装。新增流水线测试使用 pytest；完整验证运行 `python -m pytest tests -q`，原有 unittest 测试仍可运行。
 
 历史推理结果保存在 `output/`，分析产物保存在 `analysis/`，不进入提交。544 组合改变了解码、分辨率和后处理工作量，精度与性能需一起评估；参考集结果不能保证隐藏集精度达标。

@@ -113,7 +113,7 @@ class Runtime:
             raise ValueError("INPUT_SIZE must be a multiple of 32 between 320 and 1280")
         if min(self.batch, self.workers, self.prefetch) < 1:
             raise ValueError("batch, workers and pipeline depth must be positive")
-        if self.precision not in ("fp32", "fp16") or self.backend not in ("torch", "cuda_graph"):
+        if self.precision not in ("fp32", "fp16") or self.backend not in ("torch", "cuda_graph", "tensorrt"):
             raise ValueError("unsupported precision or backend")
         if not 0 <= self.threshold <= 1:
             raise ValueError("score threshold must be in [0, 1]")
@@ -188,6 +188,19 @@ class Runtime:
         if os.environ.get("CHANNELS_LAST", "1") == "1":
             self.model.to(memory_format=torch.channels_last)
         self.post.deploy()
+        self.inference_model = self.model
+        if self.backend == "tensorrt":
+            from supership.backends import TensorRTRuntime
+            if self.eval_layers or queries:
+                raise ValueError("TensorRT query/layer counts are fixed when the engine is built")
+            self.inference_model = TensorRTRuntime(
+                os.environ.get("TRT_ENGINE", "weights/supership-544.engine"),
+                self.batch, self.device,
+                os.environ.get("MODEL_WEIGHTS", "weights/baseline.pth"),
+            )
+            shape = tuple(self.inference_model.buffers["images"].shape)
+            if shape != (self.batch, 3, self.side, self.side):
+                raise ValueError(f"TensorRT input {shape} does not match batch/INPUT_SIZE")
         self.images = torch.zeros(self.batch, self.upload_side, self.upload_side, 3, dtype=torch.uint8, device=self.device)
         self.sizes = torch.ones(self.batch, 2, dtype=torch.float32, device=self.device)
         self.host = [torch.empty_like(self.images, device="cpu", pin_memory=True)
@@ -221,16 +234,23 @@ class Runtime:
             torch.cuda.current_stream(self.device).wait_stream(stream)
             torch.cuda.synchronize(self.device)
             self.graph = None
-            if self.backend == "cuda_graph":
+            if self.backend in ("cuda_graph", "tensorrt"):
                 self.graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(self.graph, stream=stream):
                     self.captured = self.forward()
                 torch.cuda.synchronize(self.device)
+
             if self.async_output:
                 example = self.captured if self.graph is not None else self.forward()
                 self.host_outputs = [torch.empty_like(example, device="cpu", pin_memory=True)
                                      for _ in range(self.prefetch)]
                 torch.cuda.synchronize(self.device)
+
+        if self.backend == "tensorrt":
+            # The captured graph owns engine buffers, not the PyTorch weights.
+            # Release the unused model before READY, after capture has completed.
+            self.model = self.inference_model
+            torch.cuda.empty_cache()
 
     def forward(self):
         if self.fused_normalize:
@@ -245,7 +265,7 @@ class Runtime:
             images.mul_(1 / 255)
         if os.environ.get("CHANNELS_LAST", "1") != "1":
             images = images.contiguous()
-        outputs = model_forward(self.model, images, self.precision)
+        outputs = model_forward(self.inference_model, images, self.precision)
         if self.fused_postprocess:
             from supership.fused_io import packed_detections
             return packed_detections(outputs, self.sizes, self.post.num_top_queries)

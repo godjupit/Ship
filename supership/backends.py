@@ -42,6 +42,8 @@ class CUDAGraphRuntime:
 
 
 class TensorRTRuntime:
+    is_runtime = True
+
     def __init__(self, engine_path, batch_size, device, weights_path):
         import tensorrt as trt
 
@@ -52,6 +54,10 @@ class TensorRTRuntime:
             raise ValueError("TensorRT engine was built from different weights; set MODEL_WEIGHTS correctly")
         if metadata.get("engine_sha256") != hashlib.sha256(Path(engine_path).read_bytes()).hexdigest():
             raise ValueError("TensorRT engine checksum mismatch")
+        if metadata.get("tensorrt", trt.__version__) != trt.__version__:
+            raise ValueError("TensorRT version changed; rebuild the engine")
+        if metadata.get("gpu", torch.cuda.get_device_name(device)) != torch.cuda.get_device_name(device):
+            raise ValueError("TensorRT engine was built for a different GPU")
         self.logger = trt.Logger(trt.Logger.WARNING)
         trt.init_libnvinfer_plugins(self.logger, "")
         self.runtime = trt.Runtime(self.logger)
