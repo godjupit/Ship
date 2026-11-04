@@ -44,3 +44,16 @@ PYTHON_BIN=.venv/bin/python RUNS=3 bash ./benchmark_reference.sh
 ## 修改约定
 
 函数和关键同步位置添加简短说明注释；每次功能修改验证后创建 Git 提交。提交说明记录测试命令、参数、各轮耗时、中位数、输出一致性及测试限制，不把未验证的改动描述为加速。
+
+
+## 整批检测结果集中回传
+
+`batch_detections_to_cpu()` 按 boxes、scores、labels 分别合并整个 batch 后回传 CPU，再按各图检测数量拆分；保留整数标签、浮点数值和原有 JSON 舍入规则。batch_size=8 时从逐图 24 次字段回传改为整批 3 次。正式入口和两个分析脚本共用该函数。
+
+测试命令：`bash ./benchmark_reference.sh`，固定 batch_size=8、val num_workers=8、float32，两组都保留独立 CUDA 拷贝流，只改变回传方式。用 PYTHON_BIN 启动包装器选择修改前 worker，对照组不改工作区代码。
+
+- 首轮各预热 1 轮，再各测 3 轮：逐图中位数 4.6214 秒，整批 4.1213 秒（快 10.82%）；逐图组有明显波动。
+- 反向复测各 3 轮：先整批中位数 4.0653 秒，后逐图 4.0021 秒（整批慢 1.58%）。
+- 两轮方向不一致，当前不能认定有稳定端到端收益；合并操作本身也增加了 GPU 工作。
+- 全部 12 份正式输出完全一致，每份 60000 条；7 个测试通过，包含 CUDA/CPU、空检测、不同检测数量、整数标签精度及原有 JSON 一致性检查。
+- 完整记录：`output/batch-transfer-20261104-165954/comparison.json` 和 `output/batch-transfer-reverse-20261104-170139/comparison.json`。旧默认推理输出已还原。

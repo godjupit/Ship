@@ -20,7 +20,7 @@ python scripts/profile_inference.py --runs 3 --batch-size 8
 - `h2d_gpu_s`：图片与原始尺寸的 CPU→GPU 传输阶段。
 - `forward_gpu_s`：模型前向计算。
 - `postprocess_gpu_s`：GPU 后处理。
-- `results_wall_s`：结果回传、同步等待及 CPU 整理。
+- `results_wall_s`：整批 boxes、scores、labels 按字段集中回传、同步等待及 CPU 整理。
 - `write_wall_s`：JSON 写盘及 flush/fsync。
 - `h2d_bytes` / `images` / `batches`：输入传输字节数、图像数、batch 数。
 
