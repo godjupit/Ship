@@ -244,3 +244,6 @@ reference_CODE
 
 # Project-local profiling tools
 .local-tools/
+
+# Local competition login; never publish credentials.
+.thuscc_credentials

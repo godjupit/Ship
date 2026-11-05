@@ -37,3 +37,11 @@ For performance changes, use `bash ./benchmark_reference.sh`, warm up first, com
 Recent commits use concise imperative subjects, such as “Restore baseline inference transfers.” Commit each validated functional change. Include test commands, parameters, measured times, medians, output checks, and limitations in the commit body. Preserve unrelated user edits. Treat `note.md` as user-maintained; do not add progress, experiment records, or summaries unless explicitly requested.
 
 PR descriptions should explain the problem, final behavior, validation, and performance evidence. Link relevant issues when available. Never claim acceleration from a single noisy run. Current inference retains only worker tuning; previously reverted transfer optimizations require fresh evidence before reintroduction.
+
+https://lab.cs.tsinghua.edu.cn/scc/Applications/SuperShip/
+这个是我赛题要求
+
+
+关于赛事规则、赛题、计分与提交指南等比赛详细内容请届时点击下方链接查看：
+
+https://lab.cs.tsinghua.edu.cn/scc

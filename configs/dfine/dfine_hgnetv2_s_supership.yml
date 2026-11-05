@@ -66,5 +66,6 @@ train_dataloader:
 val_dataloader:
   total_batch_size: 32
 
+
 # Checkpoint loading resolution; fast_worker uses INPUT_SIZE from configs/fastest.env.
 eval_spatial_size: [640, 640]
