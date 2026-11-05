@@ -63,6 +63,53 @@ def available():
 
 @unittest.skipUnless(available(), 'requires CUDA and locally built standalone artifacts')
 class StandaloneGPUChecks(unittest.TestCase):
+    @unittest.skipUnless((ROOT / 'weights/trt_resize.ptx').exists(), 'requires resize PTX')
+    def test_packed_resize_pixels_boundaries_identity_and_zero_tail(self):
+        import ctypes
+        from cuda.bindings import driver as cu
+        from supership.trt_worker import check
+
+        check(cu.cuInit(0))
+        context = check(cu.cuDevicePrimaryCtxRetain(0))
+        check(cu.cuCtxSetCurrent(context))
+        side, batch = 544, 5
+        rng = np.random.default_rng(42)
+        shapes = [(512, 512), (35, 47), (544, 544), (1, 1)]
+        images = [rng.integers(0, 256, (*shape, 3), np.uint8) for shape in shapes]
+        packed = np.zeros(batch * 16 + sum(array.nbytes for array in images), np.uint8)
+        header = packed[:batch * 16].view(np.int32).reshape(batch, 4)
+        offset = batch * 16
+        for row, array in enumerate(images):
+            header[row, :3] = array.shape[1], array.shape[0], offset
+            packed[offset:offset + array.nbytes] = array.reshape(-1)
+            offset += array.nbytes
+        actual = np.empty((batch, 3, side, side), np.float32)
+        source = check(cu.cuMemAlloc(packed.nbytes))
+        destination = check(cu.cuMemAlloc(actual.nbytes))
+        module = check(cu.cuModuleLoadData((ROOT / 'weights/trt_resize.ptx').read_bytes()))
+        try:
+            kernel = check(cu.cuModuleGetFunction(module, b'normalize'))
+            check(cu.cuMemcpyHtoD(source, packed.ctypes.data, packed.nbytes))
+            arguments = [ctypes.c_uint64(int(source)), ctypes.c_uint64(int(destination)),
+                         ctypes.c_int(side), ctypes.c_int(batch)]
+            parameters = np.array([ctypes.addressof(value) for value in arguments], np.uint64)
+            count = actual.size
+            check(cu.cuLaunchKernel(kernel, (count + 255) // 256, 1, 1, 256, 1, 1,
+                                   0, 0, parameters.ctypes.data, 0))
+            check(cu.cuMemcpyDtoH(actual.ctypes.data, destination, actual.nbytes))
+            for row, source_image in enumerate(images):
+                pixels = np.rint(actual[row].transpose(1, 2, 0) * 255).astype(np.int16)
+                expected = cv2.resize(source_image, (side, side), interpolation=cv2.INTER_LINEAR)
+                self.assertLessEqual(np.abs(pixels - expected.astype(np.int16)).max(), 1)
+                if source_image.shape[:2] in ((side, side), (1, 1)):
+                    np.testing.assert_array_equal(pixels, expected)
+            np.testing.assert_array_equal(actual[-1], 0)
+        finally:
+            check(cu.cuModuleUnload(module))
+            check(cu.cuMemFree(source))
+            check(cu.cuMemFree(destination))
+            check(cu.cuDevicePrimaryCtxRelease(0))
+
     def test_graph_warmup_preserves_recycled_slots_and_tail(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
@@ -110,6 +157,7 @@ class StandaloneGPUChecks(unittest.TestCase):
                 items.append(dict(id=100 - i, file_name=path.name, width=width, height=height))
             env = dict(os.environ, BACKEND='tensorrt', TRT_ENGINE='weights/supership-512-q100.engine',
                        INPUT_SIZE='512', BATCH_SIZE='8', NUM_WORKERS='2', PIPELINE_DEPTH='2',
+                       GPU_RESIZE='0',
                        JPEG_REDUCTION='2', SCORE_THRESHOLD='0.05', POST_TOP_QUERIES='100',
                        PYTHON_BIN=str(ROOT / '.venv/bin/python'))
             outputs = []

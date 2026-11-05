@@ -29,7 +29,7 @@ def check(result):
 
 
 def load_image(item, directory, destination, reduction):
-    """Decode RGB directly into the pinned destination when its shape matches."""
+    """Decode into pinned RGB; resize on CPU only for the bounded-buffer fallback."""
     path = Path(directory) / item['file_name']
     expected = tuple((item[k] + reduction - 1) // reduction for k in ('height', 'width'))
     flag = cv2.IMREAD_COLOR_RGB | {1: 0, 2: 16, 4: 32, 8: 64}[reduction]
@@ -41,8 +41,12 @@ def load_image(item, directory, destination, reduction):
         raise ValueError(f'cannot decode image: {path}')
     if image.shape[:2] != expected:
         raise ValueError(f'metadata dimensions disagree with decoded image: {path}')
-    cv2.resize(image, (destination.shape[1], destination.shape[0]),
-               dst=destination, interpolation=cv2.INTER_LINEAR)
+    if image.shape == destination.shape:
+        if image.ctypes.data != destination.ctypes.data:
+            np.copyto(destination, image)
+    else:
+        cv2.resize(image, (destination.shape[1], destination.shape[0]),
+                   dst=destination, interpolation=cv2.INTER_LINEAR)
 
 
 def serialize(items, output, top_queries=100, threshold=0.05):
@@ -142,23 +146,30 @@ class Runtime:
             raise ValueError('invalid top-query count or score threshold')
         if int(os.environ.get('DECODER_LAYERS', '0')) or int(os.environ.get('NUM_QUERIES', '0')):
             raise ValueError('TensorRT query/layer counts are fixed at build time')
-        self.host = [self.host_array((self.batch, self.side, self.side, 3), np.uint8)
+        self.max_pixels = max(self.side * self.side, int(os.environ.get('MAX_DECODE_PIXELS', str(self.side * self.side))))
+        self.gpu_resize = os.environ.get('GPU_RESIZE', '1') == '1'
+        if self.batch * (16 + self.max_pixels * 3) >= 2**31:
+            raise ValueError('packed input offsets must fit signed 32-bit integers')
+        # Each bounded slot starts with one [width, height, byte offset, reserved]
+        # descriptor per image, followed by tightly packed RGB pixels.
+        self.host = [self.host_array((self.batch * (16 + self.max_pixels * 3),), np.uint8)
                      for _ in range(self.depth)]
+        self.used = [0] * self.depth
         self.outputs = [{name: self.host_array(self.shapes[name], np.float32)
                          for name in ('pred_logits', 'pred_boxes')} for _ in range(self.depth)]
         self.raw = check(cu.cuMemAlloc(self.host[0].nbytes))
         check(cu.cuMemsetD8(self.raw, 0, self.host[0].nbytes))
-        ptx_path = Path(os.environ.get('TRT_KERNELS', 'weights/trt_preprocess.ptx'))
+        ptx_path = Path(os.environ.get('TRT_KERNELS', 'weights/trt_resize.ptx'))
         ptx = ptx_path.read_bytes()
         kernel_metadata = json.loads(Path(str(ptx_path) + '.json').read_text())
-        source = Path(__file__).with_name('trt_preprocess.cu').read_bytes()
+        source = Path(__file__).with_name('trt_resize.cu').read_bytes()
         if (kernel_metadata.get('ptx_sha256') != hashlib.sha256(ptx).hexdigest()
                 or kernel_metadata.get('source_sha256') != hashlib.sha256(source).hexdigest()):
             raise ValueError('CUDA kernel checksum mismatch; run scripts/build_trt_kernels.py')
         self.module = check(cu.cuModuleLoadData(ptx))
         self.kernel = check(cu.cuModuleGetFunction(self.module, b'normalize'))
         self.arguments = [ctypes.c_uint64(int(self.raw)), ctypes.c_uint64(int(self.buffers['images'])),
-                          ctypes.c_int(self.side * self.side), ctypes.c_int(self.batch)]
+                          ctypes.c_int(self.side), ctypes.c_int(self.batch)]
         self.parameters = np.array([ctypes.addressof(a) for a in self.arguments], dtype=np.uint64)
         self.sigmoid = check(cu.cuModuleGetFunction(self.module, b'sigmoid'))
         self.score_count = int(np.prod(output_shape))
@@ -222,11 +233,22 @@ class Runtime:
         def schedule(index):
             slot = index % self.depth
             batch = items[index * self.batch:(index + 1) * self.batch]
-            if len(batch) < self.batch:
-                self.host[slot][len(batch):].fill(0)
-            jobs[index] = [self.pool.submit(load_image, item, request['image_dir'],
-                                           self.host[slot][row], self.reduction)
-                           for row, item in enumerate(batch)]
+            # Unused tail descriptors remain zero; the GPU writes zero inputs.
+            header = self.host[slot][:self.batch * 16].view(np.int32).reshape(self.batch, 4)
+            header.fill(0)
+            offset = self.batch * 16
+            jobs[index] = []
+            for row, item in enumerate(batch):
+                h, w = ((item[key] + self.reduction - 1) // self.reduction for key in ('height', 'width'))
+                if not self.gpu_resize or h * w > self.max_pixels:
+                    # Large/unknown image shapes keep the existing CPU resize
+                    # path instead of growing pinned memory with the dataset.
+                    h = w = self.side
+                header[row, :3] = w, h, offset
+                destination = self.host[slot][offset:offset + h * w * 3].reshape(h, w, 3)
+                jobs[index].append(self.pool.submit(load_image, item, request['image_dir'], destination, self.reduction))
+                offset += h * w * 3
+            self.used[slot] = offset
 
         def collect(index, batch):
             slot = index % self.depth
@@ -244,7 +266,7 @@ class Runtime:
                 for job in jobs.pop(i):
                     job.result()
                 check(cu.cuMemcpyHtoDAsync(self.raw, self.host[slot].ctypes.data,
-                                          self.host[slot].nbytes, self.stream))
+                                          self.used[slot], self.stream))
                 check(cu.cuEventRecord(self.copied[slot], self.stream))
                 check(cu.cuGraphLaunch(self.graph_exec, self.stream))
                 for name, array in self.outputs[slot].items():

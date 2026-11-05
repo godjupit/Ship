@@ -41,7 +41,7 @@ def test_allocator_environment_at_worker_start(tmp_path, pipeline, host_thp, tun
 
 @pytest.mark.parametrize('entrypoint', ['run.sh', 'tools/benchmark/benchmark_optimized.sh'])
 @pytest.mark.parametrize('overrides', [{}, {'INPUT_SIZE': '640', 'THREADED_JSON': '0', 'NUM_WORKERS': '3'}])
-@pytest.mark.parametrize('allocated_cpus,workers', [(None, '10'), ('4', '10'), ('8', '6')])
+@pytest.mark.parametrize('allocated_cpus,workers', [(None, '9'), ('4', '9'), ('8', '6')])
 def test_default_launcher_selects_verified_fastest_and_preserves_overrides(tmp_path, overrides, entrypoint, allocated_cpus, workers):
     executable = tmp_path / 'inspect-preset'
     executable.write_text('#!/usr/bin/env python3\nimport os,json,sys\n'
