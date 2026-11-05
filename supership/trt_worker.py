@@ -34,11 +34,21 @@ def load_image(item, directory, destination, reduction):
     expected = tuple((item[k] + reduction - 1) // reduction for k in ('height', 'width'))
     flag = cv2.IMREAD_COLOR_RGB | {1: 0, 2: 16, 4: 32, 8: 64}[reduction]
     if destination.shape[:2] == expected:
-        image = cv2.imread(str(path), destination, flag)
+        try:
+            image = cv2.imread(str(path), destination, flag)
+        except cv2.error:
+            # Non-JPEG codecs can allocate full size and round reductions down.
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR_RGB)
+            if image is not None and image.shape[:2] == (item['height'], item['width']):
+                image = cv2.resize(image, (expected[1], expected[0]))
     else:
         image = cv2.imread(str(path), flag)
     if image is None:
         raise ValueError(f'cannot decode image: {path}')
+    if image.shape[:2] != expected:
+        full = cv2.imread(str(path), cv2.IMREAD_COLOR_RGB)
+        if full is not None and full.shape[:2] == (item['height'], item['width']):
+            image = cv2.resize(full, (expected[1], expected[0]))
     if image.shape[:2] != expected:
         raise ValueError(f'metadata dimensions disagree with decoded image: {path}')
     if image.shape == destination.shape:
@@ -150,7 +160,7 @@ class Runtime:
         self.gpu_resize = os.environ.get('GPU_RESIZE', '1') == '1'
         if self.batch * (16 + self.max_pixels * 3) >= 2**31:
             raise ValueError('packed input offsets must fit signed 32-bit integers')
-        # Each bounded slot starts with one [width, height, byte offset, reserved]
+        # Each bounded slot starts with one [width, height, byte offset, format]
         # descriptor per image, followed by tightly packed RGB pixels.
         self.host = [self.host_array((self.batch * (16 + self.max_pixels * 3),), np.uint8)
                      for _ in range(self.depth)]
@@ -159,10 +169,18 @@ class Runtime:
                          for name in ('pred_logits', 'pred_boxes')} for _ in range(self.depth)]
         self.raw = check(cu.cuMemAlloc(self.host[0].nbytes))
         check(cu.cuMemsetD8(self.raw, 0, self.host[0].nbytes))
-        ptx_path = Path(os.environ.get('TRT_KERNELS', 'weights/trt_resize.ptx'))
+        decoder_mode = os.environ.get('STANDALONE_DECODER', 'opencv')
+        if decoder_mode not in ('opencv', 'rgb', 'yuv'):
+            raise ValueError('invalid standalone decoder')
+        self.decoder = None
+        if decoder_mode != 'opencv':
+            from supership.jpeg_decoder import JPEGDecoder
+            self.decoder = JPEGDecoder(load_image, decoder_mode)
+        kernel_name = 'trt_yuv' if decoder_mode == 'yuv' else 'trt_resize'
+        ptx_path = Path(os.environ.get('TRT_KERNELS', f'weights/{kernel_name}.ptx'))
         ptx = ptx_path.read_bytes()
         kernel_metadata = json.loads(Path(str(ptx_path) + '.json').read_text())
-        source = Path(__file__).with_name('trt_resize.cu').read_bytes()
+        source = Path(__file__).with_name(kernel_name + '.cu').read_bytes()
         if (kernel_metadata.get('ptx_sha256') != hashlib.sha256(ptx).hexdigest()
                 or kernel_metadata.get('source_sha256') != hashlib.sha256(source).hexdigest()):
             raise ValueError('CUDA kernel checksum mismatch; run scripts/build_trt_kernels.py')
@@ -246,7 +264,11 @@ class Runtime:
                     h = w = self.side
                 header[row, :3] = w, h, offset
                 destination = self.host[slot][offset:offset + h * w * 3].reshape(h, w, 3)
-                jobs[index].append(self.pool.submit(load_image, item, request['image_dir'], destination, self.reduction))
+                if self.decoder is None:
+                    job = self.pool.submit(load_image, item, request['image_dir'], destination, self.reduction)
+                else:
+                    job = self.pool.submit(self.decoder, item, request['image_dir'], destination, self.reduction, header[row])
+                jobs[index].append(job)
                 offset += h * w * 3
             self.used[slot] = offset
 
@@ -283,6 +305,8 @@ class Runtime:
                 collect(*arguments)
         finally:
             self.pool.shutdown(wait=True)
+            if self.decoder is not None:
+                self.decoder.close()
             check(cu.cuStreamSynchronize(self.stream))
             self.result_pool.shutdown(wait=True)
         chunks = [future.result() for future in results]
