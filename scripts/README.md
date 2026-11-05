@@ -41,6 +41,15 @@ PyTorch fast worker 的 YAML 640 尺寸用于严格加载权重，再根据 `INP
 
 历史推理结果保存在 `output/`，分析产物保存在 `analysis/`，不进入提交。544 组合改变了解码、分辨率和后处理工作量，精度与性能需一起评估；参考集结果不能保证隐藏集精度达标。
 
+## 固定优化流程
+
+1. 保存当前 Git 提交、配置、引擎校验和和独立输出目录，检查没有其他 GPU 任务。先用正式入口记录现有方案。
+2. 性能分别用 4,300 张 `throughput4300` 和原始 200 张参考集：各先预热一轮，再正反顺序交错运行基线和候选各至少五轮，保留全部耗时、中位数、输出及校验值。200 张时间用于提交对照，不能只记录精度。不能用 profiler 内的耗时宣称加速。
+3. 用分阶段 CPU 计时与完整 GPU 时间线确定瓶颈，再改变一个主要因素。报告必须含有 CUDA kernel 和 memcpy 记录；空报告视为采集失败。
+4. 数学路径未变的改动检查输出逐字节一致；改了解码、数值或引擎的方案，分别在原始 1,030 张验证集和 200 张参考集重跑并评分。各自与原始 640 FP32 基线比较，AP50 至少保留 98%。不能用重复的 4,300 张图统计精度。
+5. 验证空输入、图片顺序、缓冲复用、尾批、READY 前不访问评测数据、GPU/线程完成、输出 fsync/关闭及正常退出。运行适用的测试和 `git diff --check`。
+6. 只有可复现收益且精度合格才调整默认配置；失败尝试保留独立日志，不留在默认推理路径。文档记录条件、每轮结果、误差、局限和复现命令，提交已验证代码；不改用户维护的 `note.md`。
+
 ## 2026-11-05 流水线实验
 
 RTX 4090、当前 10 CPU 环境，544 FP16、batch 8、10 个解码线程、深度 3；每组先预热一次，再交错测五轮完整验证集（1,030 张），使用正式 worker 计时到退出。除表中变量外配置相同，没有更改模型结构或权重。
@@ -110,9 +119,29 @@ bash scripts/experiments/profile_nsys.sh
 
 安装包来自 [NVIDIA 官方仓库](https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/)，解压安装不会替换系统 CUDA、驱动或 PyTorch。工具本体不进入 Git。安装后重新执行 `source activate_env.sh`，`nsys` 会优先使用本地新版。
 
-采集脚本直接运行正式推理入口，将版本、日志、`.nsys-rep`、SQLite、统计和检测结果集中保存在独立的 `analysis/nsight/时间戳/` 下，并检查 kernel 和内存传输记录非空。可通过 `NSYS_BIN` 指定其他 Nsight 路径，`BATCH_SIZE` 指定批量，`PROFILE_DIR` 指定输出目录。
+采集脚本直接运行正式推理入口，将版本、日志、`.nsys-rep`、SQLite、统计和检测结果集中保存在独立的 `analysis/nsight/时间戳/` 下，并检查 kernel 和内存传输记录非空。可通过 `NSYS_BIN` 指定其他 Nsight 路径，`BATCH_SIZE` 指定批量，`PROFILE_DIR` 指定输出目录，`PROFILE_IMAGES` / `PROFILE_META` 指定数据集。
 
-报告包含初始化与合成输入预热，查看时间线时应区分启动阶段与实际图片推理。采集会增加运行开销，正式耗时仍用 `benchmark_reference.sh` 测量；有 CUDA Event 或 CPU 分段计时的旧 JSON 属于独立分析结果，不是 Nsight 报告。
+独立 worker 使用 `os._exit()`，因此 profiling 入口需要在退出前显式结束采集。`profile_nsys.sh` 设置 `PROFILE_NSYS=1`，经 `run.sh` 启动 `profile_worker.py`：初始化和合成预热完成后，在请求处理前调用 `cuProfilerStart()`，请求结束后通过 `finally` 调用 `cuProfilerStop()` 刷新采集。Nsight 使用 `--capture-range=cudaProfilerApi --capture-range-end=stop --cuda-graph-trace=node`。正式推理不设置此变量，仍直接启动原 worker。
+
+修复后的报告只含请求阶段，不含模型初始化。采集会增加运行开销，正式耗时用 `benchmark_throughput.sh` 测量。此脚本当前要求独立 TensorRT worker；其他后端需要自己的采集范围。4,300 张验证报告 `analysis/nsight/throughput4300-fixed/inference.nsys-rep` 包含 168,932 条 kernel、1,614 条 memcpy，符合 538 个批次；旧的 `throughput4300` 报告缺少 CUDA 数据，不能用于结论。
+
+```bash
+PROFILE_DIR=analysis/nsight/another-4300-run \
+PROFILE_IMAGES=data/SuperShip/throughput4300/images \
+PROFILE_META=data/SuperShip/throughput4300/images_meta.json \
+  bash scripts/experiments/profile_nsys.sh
+```
+
+另有 `scripts/experiments/profile_standalone.py` 对生产函数加计时包装，分别记录读取/解码、缩放、序列化的线程 CPU 时间，以及 CUDA API 的主机等待时间。`PROFILE_CUDA_EVENTS=1` 增加 GPU Event 时间线，`PROFILE_JSON` 指定 JSON 路径。多线程累计 wall time 彼此重叠，不能相加当作端到端时间。
+
+```bash
+source configs/fastest.env
+PROFILE_CUDA_EVENTS=1 PROFILE_JSON=analysis/standalone-4300-events.json \
+  python scripts/experiments/profile_standalone.py \
+  < analysis/nsight/throughput4300-fixed/request.json
+```
+
+4,300 张诊断中：读取/解码约 22.5 个 CPU 秒、缩放约 3.9 个 CPU 秒、序列化约 0.88 个 CPU 秒；CUDA Event 测得 Graph 约 1.476 秒、H2D 约 0.243 秒。Nsight 交叉验证 kernel 总时长约 1.524 秒。采集本身会影响时间线空闲比例，不能将 profiler 的占用率当作无采集时的 GPU 利用率。当前应优先优化 CPU 图像处理，而非传输流。
 
 新版统计项名称为 `cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum`，不要沿用旧版的 `cudaapisum,gpukernsum,gpumemtimesum`。重新统计已有报告时可执行：
 

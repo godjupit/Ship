@@ -21,6 +21,9 @@ fi
 
 if [[ "${PIPELINE:-standard}" == "fast" ]]; then
   if [[ "${BACKEND:-}" == "tensorrt" && "${TRT_STANDALONE:-0}" == "1" ]]; then
+    if [[ "${PROFILE_NSYS:-0}" == "1" ]]; then
+      exec "$PYTHON_BIN" scripts/experiments/profile_worker.py "$@"
+    fi
     exec "$PYTHON_BIN" supership/trt_worker.py "$@"
   fi
   exec "$PYTHON_BIN" supership/fast_worker.py "$@"
