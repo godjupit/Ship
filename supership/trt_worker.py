@@ -172,6 +172,11 @@ class Runtime:
         self.forward()
         self.graph = check(cu.cuStreamEndCapture(self.stream))
         self.graph_exec = check(cu.cuGraphInstantiate(self.graph, 0))
+        if os.environ.get('TRT_GRAPH_WARMUP', '1') == '1':
+            # First graph launch uploads executable state. Use synthetic inputs
+            # before READY so this work does not delay the measured request.
+            check(cu.cuGraphLaunch(self.graph_exec, self.stream))
+            check(cu.cuStreamSynchronize(self.stream))
         self.events = [check(cu.cuEventCreate(2)) for _ in range(self.depth)]
         self.copied = [check(cu.cuEventCreate(2)) for _ in range(self.depth)]
         self.pool = ThreadPoolExecutor(max_workers=self.workers)

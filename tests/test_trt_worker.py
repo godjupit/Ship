@@ -63,6 +63,39 @@ def available():
 
 @unittest.skipUnless(available(), 'requires CUDA and locally built standalone artifacts')
 class StandaloneGPUChecks(unittest.TestCase):
+    def test_graph_warmup_preserves_recycled_slots_and_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            rng = np.random.default_rng(73)
+            items = []
+            # More than two complete rings plus a tail catches early slot reuse.
+            for i in range(41):
+                path = directory / f'{i}.jpg'
+                Image.fromarray(rng.integers(0, 256, (63, 79, 3), np.uint8)).save(path)
+                items.append(dict(id=100-i, file_name=path.name, width=79, height=63))
+            metadata = directory / 'meta.json'
+            metadata.write_text(json.dumps(dict(images=items)))
+            outputs = []
+            for warmup in ('0', '1'):
+                output = directory / f'{warmup}.json'
+                env = dict(os.environ, BACKEND='tensorrt', TRT_STANDALONE='1',
+                           TRT_ENGINE='weights/supership-512-q100.engine', INPUT_SIZE='512',
+                           BATCH_SIZE='8', NUM_WORKERS='2', PIPELINE_DEPTH='2',
+                           SCORE_THRESHOLD='0', POST_TOP_QUERIES='100',
+                           TRT_GRAPH_WARMUP=warmup,
+                           PYTHON_BIN=str(ROOT / '.venv/bin/python'))
+                result = subprocess.run(
+                    ['bash', 'run.sh', '--worker'], cwd=ROOT, env=env,
+                    input=json.dumps(dict(image_dir=str(directory), meta_file=str(metadata),
+                                          output_file=str(output))) + '\n',
+                    capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs.append(output.read_bytes())
+            self.assertEqual(outputs[0], outputs[1])
+            # Threshold zero makes this a numerical check even on synthetic images.
+            self.assertEqual({row['image_id'] for row in json.loads(outputs[0])},
+                             {item['id'] for item in items})
+
     def test_ready_precedes_metadata_access_and_tail_matches_existing_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
