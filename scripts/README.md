@@ -8,21 +8,23 @@ source activate_env.sh
 
 ## 正式推理
 
-默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、512×512、batch 8、100 个解码查询、top100、置信度阈值 0.05，OpenCV RGB 缩小解码（2）。默认 `OPENBLAS_NUM_THREADS=1`，避免未参与后处理的 BLAS 工作线程；调用方可覆盖。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
+默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、544×544、batch 8、原模型 300 个解码查询、top100、置信度阈值 0.05，OpenCV RGB 缩小解码（2）。默认 `OPENBLAS_NUM_THREADS=1`，避免未参与后处理的 BLAS 工作线程；调用方可覆盖。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
 
 首次构建需要已有 CUDA PyTorch 环境、`requirements-fast.txt`、`requirements-tensorrt.txt` 和 CUDA Toolkit 的 `nvcc`：
 
 ```bash
-python scripts/build_tensorrt.py --side 512 --num-queries 100 --output weights/supership-512-q100.engine
+python scripts/build_tensorrt.py --side 544 --output weights/supership-544.engine
 python scripts/build_trt_kernels.py
 bash benchmark_reference.sh
 ```
 
-构建仅使用原始权重和合成输入。离线部署需携带 `weights/baseline.pth`、上述 `.engine`、`weights/trt_preprocess.ptx` 及两者同名 `.json` 校验文件。运行时不调用编译器、不访问网络；检查引擎、权重、PTX、CUDA 源码校验和、GPU、TensorRT 版本和输入形状。改变输入尺寸、batch 或查询数必须重新构建引擎。`TRT_ENGINE`、`TRT_KERNELS` 可覆盖产物路径。
+构建仅使用原始权重和合成输入。离线部署需携带 `weights/baseline.pth`、`weights/supership-544.engine`、`weights/trt_preprocess.ptx` 及两者同名 `.json` 校验文件。运行时不调用编译器、不访问网络；检查引擎、权重、PTX、CUDA 源码校验和、GPU、TensorRT 版本和输入形状。改变输入尺寸、batch 或查询数必须重新构建引擎。`TRT_ENGINE`、`TRT_KERNELS` 可覆盖产物路径。
 
 所有评测数据在 READY 后读取。输入和输出使用有界 pinned 缓冲区；事件分别保护 H2D 输入复用和 D2H 输出读取。CUDA Graph 包含归一化、推理和 sigmoid；CPU 线程完成 top-k、坐标换算和 JSON 序列化。尾批补零，只写出真实图像。全部任务完成、输出 fsync 并关闭后才退出。独立运行时固定使用 RGB 解码和线程化 JSON；原 PyTorch 路径的算子开关不适用于它。
 
-基准测试先预热一次，再正式运行三轮，并在计时外输出 AP50。`RUNS` 控制正式轮数，`OUTPUT_FILE` 指定输出位置，`COMPARE_ACCURACY=False` 关闭评分。比较实验应使用独立输出目录。200 张参考集交错三轮对照：旧 544 TensorRT 路径中位数 0.21632 秒，独立 512/100-query 路径 0.16537 秒；AP50 为 0.7824626。该精度和性能不代表隐藏测试集。
+默认在 READY 前使用合成零输入执行一次已实例化的 CUDA Graph，使首次 Graph 上传和执行发生在初始化阶段。`TRT_GRAPH_WARMUP=0` 可关闭此步骤用于对照；不会提前访问评测元数据或图像。
+
+基准测试先预热一次，再正式运行三轮，并在计时外输出 AP50。`RUNS` 控制正式轮数，`OUTPUT_FILE` 指定输出位置，`COMPARE_ACCURACY=False` 关闭评分。比较实验应使用独立输出目录。历史 512/100-query 引擎虽然在参考集上较快，但完整验证集 AP50 仅 0.892285，低于基线 0.917040 的 98% 门槛，因此已撤回默认配置。当前 544/300-query 引擎完整验证集 AP50 为 0.905842。上述精度不代表隐藏测试集。
 
 保留原路径用于对照：
 
@@ -38,6 +40,61 @@ PIPELINE=standard bash benchmark_reference.sh
 PyTorch fast worker 的 YAML 640 尺寸用于严格加载权重，再根据 `INPUT_SIZE` 重建几何参数。`NUM_WORKERS` 控制解码线程；YAML DataLoader worker 不控制此流水线。完整验证使用 `python -m pytest tests -q`，也保留 `python -m unittest discover -s tests -v`。
 
 历史推理结果保存在 `output/`，分析产物保存在 `analysis/`，不进入提交。544 组合改变了解码、分辨率和后处理工作量，精度与性能需一起评估；参考集结果不能保证隐藏集精度达标。
+
+## 2026-11-05 流水线实验
+
+RTX 4090、当前 10 CPU 环境，544 FP16、batch 8、10 个解码线程、深度 3；每组先预热一次，再交错测五轮完整验证集（1,030 张），使用正式 worker 计时到退出。除表中变量外配置相同，没有更改模型结构或权重。
+
+| 方案 | 端到端中位数（秒） |
+| --- | ---: |
+| 原实现 | 0.789518 |
+| 初始化阶段执行 Graph | 0.778298 |
+| 独立 H2D 流、分槽设备输入、Graph 预热 | 0.792266 |
+| 16 个解码线程 | 0.939115 |
+| 缓冲深度 6 | 0.795985 |
+| 重新构建 batch 16 引擎 | 0.798877 |
+
+仅保留 Graph 初始化调整。额外七轮交错复测：参考集 0.190102 → 0.189329 秒；验证集 0.822047 → 0.803739 秒。差距小且有波动，不据此宣称显著加速。两套数据各轮输出均逐字节一致，验证集 AP50 保持 0.905842。batch 16 的 AP50 为 0.905667，但没有速度收益，未替换默认引擎。
+
+另用 CUDA 11.8 nvJPEG GPU hybrid、batch 128 测试独立解码：三轮中位数 0.981124 秒；OpenCV 缩小解码加缩放为 0.656063 秒。两者都计入读文件；nvJPEG 尚未计入缩放、推理，且解码数值路径不同。该探测不是完整 nvJPEG 推理实现的端到端比较，未接入默认 worker。
+
+原始记录与可复跑脚本保存在本地 `output/pipeline-rework/`：`matrix.py`、`matrix-summary.json`、`confirm-*-summary.json`、`decode_probe.py`、`accuracy.json` 和 `tests.log`。独立传输流试验补丁为 `experimental-overlap.patch`，未保留在生产代码中。batch 16 引擎可用 `python scripts/build_tensorrt.py --side 544 --batch-size 16 --output weights/supership-544-b16.engine` 重建。测试命令 `python -m unittest discover -s tests -v`：74 项，跳过 1 项，其余通过；包含空输入、READY 协议、缓冲复用与尾批数值一致性。另执行 `python -m pytest tests -q`：187 项通过，1 项跳过。
+
+## 4,300 张规模的性能回归
+
+精度使用原始 1,030 张验证集与 200 张参考集；复制出的 4,300 张负载仅用于测速。使用固定种子 20261105，从上述 1,230 张图像均衡重复采样并打乱，生成 4,300 个独立文件和唯一 ID，占约 1.2 GiB；包含 3,595 个验证图像副本和 705 个参考图像副本。`provenance.json` 保存来源，元数据不包含标注。重复内容及预热后的文件缓存不能代表隐藏集分布或冷盘性能。
+
+```bash
+source activate_env.sh
+# 首次生成；已有目录会拒绝覆盖。
+python scripts/experiments/make_throughput_dataset.py
+# 此入口不对复制数据计算 AP。
+PYTHON_BIN=.venv/bin/python RUNS=5 OUTPUT_FILE=output/throughput4300_submission.json \
+  bash scripts/experiments/benchmark_throughput.sh
+```
+
+`THROUGHPUT_DATA` 可指定其他相同布局的数据目录；后端和流水线变量仍由 `run.sh` 接收。生成和测速均在仓库根目录执行。基准覆盖全部读图、预处理、推理、后处理、fsync 和进程退出，每组预热一次后测五轮，正反顺序交错执行。当前环境实测秒数如下：
+
+| 方案 | 第 1 轮 | 第 2 轮 | 第 3 轮 | 第 4 轮 | 第 5 轮 | 中位数 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 原实现 | 3.1338 | 3.0680 | 3.2165 | 3.1079 | 3.0673 | 3.1079 |
+| Graph 预热（保留） | 3.0537 | 3.0427 | 3.0483 | 3.1243 | 3.0687 | 3.0537 |
+| 独立传输流 + Graph 预热 | 3.2677 | 3.0949 | 3.0425 | 3.0475 | 3.0719 | 3.0719 |
+| 6 个解码线程 | 4.3369 | 4.0291 | 3.9643 | 3.9154 | 4.0344 | 4.0291 |
+| 16 个解码线程 | 3.7327 | 3.6658 | 3.8458 | 3.7973 | 3.7799 | 3.7799 |
+| 缓冲深度 6 | 3.0560 | 3.0736 | 3.1004 | 3.1231 | 3.1525 | 3.1004 |
+| batch 16 | 3.0449 | 3.9585 | 3.0752 | 3.1244 | 3.1182 | 3.1182 |
+
+Graph 预热方案中位数比原实现低约 1.7%，收益有限。除 batch 16 外，所有方案五轮输出逐字节一致（140,854 条检测）；batch 16 的输出在其各轮之间一致（140,729 条检测）。独立新测速入口的额外冒烟检查也通过，输出与对照一致。原始逐轮数据在 `output/pipeline-rework/matrix4300-summary.json`，执行快照为 `matrix4300.py`；这些本地生成产物不提交。
+
+精度重新运行原始 640 FP32 基线，并在两套未复制的原始数据上评分：
+
+| 数据集 | 640 基线 AP50 | 当前 batch 8 AP50 | 基线保留比例 | batch 16 AP50 |
+| --- | ---: | ---: | ---: | ---: |
+| 验证集 1,030 张 | 0.917040 | 0.905842 | 98.7789% | 0.905667 |
+| 参考集 200 张 | 0.793473 | 0.781692 | 98.5152% | 0.780920 |
+
+两套公开数据上均超过基线 98% 的门槛；这不是隐藏集保证。数值与评分执行快照保存在 `accuracy-both-splits.json` 和 `check_accuracy.py`。
 
 ## Nsight Systems 时间线
 
