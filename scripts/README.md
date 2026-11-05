@@ -1,6 +1,6 @@
 # 推理与实验脚本
 
-当前优化代码保存在两个独立分支：`optimize/throughput-4300`（工作目录 `/home/ubuntu/SuperShip-worktrees/throughput-4300`）继续优化长流；`optimize/reference-200`（`/home/ubuntu/SuperShip-worktrees/reference-200`）冻结已测最快的 200 张版本。主目录仍保留对照实现。配置、时间、观察及下一步方法统一记录在 `实验.md`。
+`main` 汇总已验证实现；`optimize/throughput-4300` 与 `optimize/reference-200` 分别保存两个目标的版本。最新为CPU YUV + GPU融合颜色/缩放，加9bit Huffman查表与PGO解码库。五轮正式入口中位数2.363127秒，同轮旧库2.574512秒（快8.21%，五轮均更快）；200张为0.154298秒，同轮旧200分支0.164358秒。输出与前一YUV方案一致。实验记录在主工作目录 `实验.md`。
 
 所有命令从仓库根目录执行，先激活环境：
 
@@ -10,23 +10,37 @@ source activate_env.sh
 
 ## 正式推理
 
-默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、544×544、batch 8、原模型 300 个解码查询、top100、置信度阈值 0.05，OpenCV RGB 缩小解码（2）。默认 `OPENBLAS_NUM_THREADS=1`，避免未参与后处理的 BLAS 工作线程；调用方可覆盖。默认 10 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
+默认入口 `run.sh` 使用 `supership/trt_worker.py`：独立 TensorRT/CUDA Driver 运行时，不导入 PyTorch。配置集中在 `configs/fastest.env`，调用方环境变量优先。当前预设为 FP16 引擎、544×544、batch 8、原模型 300 个解码查询、top100、置信度阈值 0.05，CPU YUV缩小解码（2），GPU融合颜色转换、缩放、布局转换及归一化。默认 `OPENBLAS_NUM_THREADS=1`，避免未参与后处理的 BLAS 工作线程；调用方可覆盖。当前 10 CPU 环境默认 9 个解码线程；`SLURM_CPUS_PER_TASK=8` 时为 6 个。
 
 首次构建需要已有 CUDA PyTorch 环境、`requirements-fast.txt`、`requirements-tensorrt.txt` 和 CUDA Toolkit 的 `nvcc`：
 
 ```bash
 python scripts/build_tensorrt.py --side 544 --output weights/supership-544.engine
 python scripts/build_trt_kernels.py
+python scripts/build_trt_kernels.py --source trt_yuv
+# Source checkout must be unmodified at this exact revision; NASM is required.
+git clone https://github.com/libjpeg-turbo/libjpeg-turbo.git .local-tools/libjpeg-source
+git -C .local-tools/libjpeg-source checkout 6c87537f60941f3c265c339fe60d1e31d2a42ccf
+python scripts/build_jpeg_decoder.py --source .local-tools/libjpeg-source
 bash benchmark_reference.sh
 ```
 
-构建仅使用原始权重和合成输入。离线部署需携带 `weights/baseline.pth`、`weights/supership-544.engine`、`weights/trt_preprocess.ptx` 及两者同名 `.json` 校验文件。运行时不调用编译器、不访问网络；检查引擎、权重、PTX、CUDA 源码校验和、GPU、TensorRT 版本和输入形状。改变输入尺寸、batch 或查询数必须重新构建引擎。`TRT_ENGINE`、`TRT_KERNELS` 可覆盖产物路径。
+构建仅使用原始权重和合成输入。离线部署需携带 `weights/baseline.pth`、`weights/supership-544.engine`、`weights/trt_yuv.ptx` 及引擎/PTX同名 `.json` 校验文件。运行时不调用编译器、不访问网络；检查引擎、权重、PTX、CUDA 源码校验和、GPU、TensorRT 版本和输入形状。改变输入尺寸、batch 或查询数必须重新构建引擎。`TRT_ENGINE`、`TRT_KERNELS` 可覆盖产物路径。
 
-所有评测数据在 READY 后读取。输入和输出使用有界 pinned 缓冲区；事件分别保护 H2D 输入复用和 D2H 输出读取。CUDA Graph 包含归一化、推理和 sigmoid；CPU 线程完成 top-k、坐标换算和 JSON 序列化。尾批补零，只写出真实图像。全部任务完成、输出 fsync 并关闭后才退出。独立运行时固定使用 RGB 解码和线程化 JSON；原 PyTorch 路径的算子开关不适用于它。
+JPEG运行库另需携带 `weights/libturbojpeg-pgo.so`、同名`.json`、`.LICENSE.md`和`.README.ijg`。PGO构建只读取2405张公开训练图，不使用评测图；需要GCC/G++、CMake和NASM。构建目录必须是新目录（`--work-dir`），详情在目录内`build.log`；不要与性能测试同时编译。默认针对Zen2/EPYC7402，其他CPU需确认指令兼容并重建复测。推理不需要训练集、源码、编译器或PGO数据。`TURBOJPEG_LIBRARY=bundled`切回原wheel解码器；设置其他路径时必须提供同名SHA256清单。
+
+所有评测数据在 READY 后读取。输入和输出使用有界 pinned 缓冲区；事件分别保护 H2D 输入复用和 D2H 输出读取。CUDA Graph 包含缩放、归一化、推理和 sigmoid；CPU 线程完成 top-k、坐标换算和 JSON 序列化。尾批补零，只写出真实图像。全部任务完成、输出 fsync 并关闭后才退出。独立运行时使用线程化 JSON，`STANDALONE_DECODER=yuv` 为默认；`opencv`/`rgb` 可用于RGB对照；原 PyTorch 路径的算子开关不适用于它。
+
+
+GPU 缩放使用有界 packed RGB/YUV 输入：每图的宽、高、字节偏移和格式在槽头，解码直接写入 pinned 子区域。`MAX_DECODE_PIXELS` 默认等于网络输入面积（544²），较大的解码图像回退到原 CPU resize；不会按整套图片分配内存。`GPU_RESIZE=0` 强制使用该 CPU 路径用于兼容对照。尾批描述符清零，GPU 为填充图像写零。
+
+YUV路径支持4:2:0，其他格式回退RGB/OpenCV；每图仍预留RGB容量，当前不减少整个槽的上传跨度。YUV色度重建改变像素，验证集AP50=0.905448405，参考集AP50=0.778955797，均超过各自基线98%。新依赖 `turbojpeg==0.0.2` 固定于 `requirements-tensorrt.txt`，DALI不是运行依赖。
+
+GPU 插值使用定点系数并在归一化前量化到 uint8；与 OpenCV 的 SIMD 舍入可能相差 1 个灰度级，因此这是经过 AP 验证的数值改动，不宣称输出与旧实现逐字节一致。单测覆盖奇数尺寸、边界、恒等尺寸、单像素和零尾批。模型结构、权重、300 个查询及 TensorRT 引擎不变。
 
 默认在 READY 前使用合成零输入执行一次已实例化的 CUDA Graph，使首次 Graph 上传和执行发生在初始化阶段。`TRT_GRAPH_WARMUP=0` 可关闭此步骤用于对照；不会提前访问评测元数据或图像。
 
-基准测试先预热一次，再正式运行三轮，并在计时外输出 AP50。`RUNS` 控制正式轮数，`OUTPUT_FILE` 指定输出位置，`COMPARE_ACCURACY=False` 关闭评分。比较实验应使用独立输出目录。历史 512/100-query 引擎虽然在参考集上较快，但完整验证集 AP50 仅 0.892285，低于基线 0.917040 的 98% 门槛，因此已撤回默认配置。当前 544/300-query 引擎完整验证集 AP50 为 0.905842。上述精度不代表隐藏测试集。
+基准测试先预热一次，再正式运行三轮，并在计时外输出 AP50。`RUNS` 控制正式轮数，`OUTPUT_FILE` 指定输出位置，`COMPARE_ACCURACY=False` 关闭评分。比较实验应使用独立输出目录。历史 512/100-query 引擎虽然在参考集上较快，但完整验证集 AP50 仅 0.892285，低于基线 0.917040 的 98% 门槛，因此已撤回默认配置。本分支融合缩放后的完整验证集 AP50 为 0.905387，200 张参考集为 0.781422。上述精度不代表隐藏测试集。
 
 保留原路径用于对照：
 
@@ -46,7 +60,7 @@ PyTorch fast worker 的 YAML 640 尺寸用于严格加载权重，再根据 `INP
 ## 固定优化流程
 
 1. 保存当前 Git 提交、配置、引擎校验和和独立输出目录，检查没有其他 GPU 任务。先用正式入口记录现有方案。
-2. 性能优先用 4,300 张 `throughput4300`：先预热一轮，再正反顺序交错运行基线和候选各至少五轮，保留全部耗时、中位数、输出及校验值。200 张只冻结已测最快配置、时间与精度，不再单独调参。不能用 profiler 内的耗时宣称加速。
+2. 性能优先用 4,300 张 `throughput4300`：先预热一轮，再正反顺序交错运行基线和候选各至少五轮，保留全部耗时、中位数、输出及校验值。200 张只归档已测最快配置、时间和精度，不做专门调参。不能用 profiler 内的耗时宣称加速。
 3. 用分阶段 CPU 计时与完整 GPU 时间线确定瓶颈，再改变一个主要因素。报告必须含有 CUDA kernel 和 memcpy 记录；空报告视为采集失败。
 4. 数学路径未变的改动检查输出逐字节一致；改了解码、数值或引擎的方案，分别在原始 1,030 张验证集和 200 张参考集重跑并评分。各自与原始 640 FP32 基线比较，AP50 至少保留 98%。不能用重复的 4,300 张图统计精度。
 5. 验证空输入、图片顺序、缓冲复用、尾批、READY 前不访问评测数据、GPU/线程完成、输出 fsync/关闭及正常退出。运行适用的测试和 `git diff --check`。

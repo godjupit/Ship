@@ -9,11 +9,12 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', default='weights/trt_preprocess.ptx')
+    parser.add_argument('--output')
+    parser.add_argument('--source', choices=('trt_resize', 'trt_yuv'), default='trt_resize')
     parser.add_argument('--nvcc', default=shutil.which('nvcc') or '/usr/local/cuda/bin/nvcc')
     args = parser.parse_args()
-    source = Path(__file__).resolve().parents[1] / 'supership/trt_preprocess.cu'
-    output = Path(args.output)
+    source = Path(__file__).resolve().parents[1] / 'supership' / (args.source + '.cu')
+    output = Path(args.output or f'weights/{args.source}.ptx')
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([args.nvcc, '-ptx', '-arch=compute_89', str(source), '-o', str(output)], check=True)
     manifest = dict(source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),

@@ -1,5 +1,18 @@
 # SuperShip: GPU End-to-End Inference Optimization
 
+
+当前 `main` 已汇总验证通过的优化代码：TensorRT FP16、CPU YUV 解码、GPU 融合预处理、PGO9 JPEG 解码库。模型结构和权重保持不变。
+
+| 保存版本 | 分支 | 已记录结果 |
+| --- | --- | --- |
+| 4300 张吞吐 | `optimize/throughput-4300` | 五轮中位数 2.363127 秒；公开图片复制负载 |
+| 200 张参考集 | `optimize/reference-200` | 五轮中位数 0.154298 秒；正式提交三轮中位数 0.155335976 秒 |
+
+精度：验证集 AP50 0.905448405，参考集 AP50 0.778955797。时间是本机测量，4300 张复制负载不代表隐藏集成绩。
+
+构建、离线产物和运行方式见 [脚本说明](scripts/README.md)，实验取舍及提交记录见 [实验日志](实验.md)。从 Git 克隆后需准备数据、原始权重，并按说明构建引擎、CUDA kernel 和 JPEG 库；生成产物不放入 Git。旧版本保留在 `archive/throughput-4300-pre-pgo` 和 `archive/reference-200-pre-pgo`。
+
+
 This repository is the public code package for the SuperShip competition task. It contains the fixed RT-DETRv4 source, the official baseline inference weight, and the reference timing/scoring tools. The public dataset is distributed separately through Tsinghua Cloud.
 
 The full competition rules are available in [COMPETITION.md](COMPETITION.md).

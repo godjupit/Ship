@@ -3,3 +3,5 @@ onnx==1.17.0
 tensorrt-cu12==10.0.1
 # CUDA Driver bindings for the standalone worker (no PyTorch runtime imports).
 cuda-bindings==13.4.4
+# Direct pinned RGB/YUV JPEG decode; wheel bundles libjpeg-turbo 3.0.0.
+turbojpeg==0.0.2

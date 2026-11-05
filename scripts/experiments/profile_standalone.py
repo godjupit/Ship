@@ -95,6 +95,9 @@ def profiled_run(runtime, request):
 
 if __name__ == '__main__':
     instrument(worker.cv2, 'imread', 'read_decode')
+    if os.environ.get('STANDALONE_DECODER', 'opencv') != 'opencv':
+        from supership.jpeg_decoder import JPEGDecoder
+        instrument(JPEGDecoder, '__call__', 'jpeg_read_decode')
     instrument(worker.cv2, 'resize', 'resize')
     instrument(worker, 'serialize', 'serialize')
     instrument(os, 'fsync', 'fsync')
