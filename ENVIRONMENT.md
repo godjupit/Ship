@@ -12,7 +12,7 @@ python -c "import torch, torchvision; print(torch.__version__, torchvision.__ver
 - 复用服务器已下载的 CUDA 12.4 NVRTC、runtime、cuBLAS、cuFFT、cuRAND、cuSOLVER、cuSPARSE，以及校验通过的 cuSPARSELt、CUPTI、NVTX、nvJitLink，文件复制到项目环境，不依赖 `/dev/shm/juno` 持续存在。
 - base 中 cuDNN、NCCL 的旧版安装记录与实际库文件不符，文件被 CUDA 13 包覆盖；项目环境重新安装兼容的 cuDNN 9.1 / NCCL 2.21.5。配套使用 Triton 3.2.0 / SymPy 1.13.1。
 - 不修改系统 NVIDIA 驱动和 `/usr/local/cuda`。系统 `nvcc` 仍为 11.8；本环境配置的是 PyTorch 推理所需的 12.4 运行库，没有安装 12.4 编译工具链。
-- 默认入口为 `bash run.sh --worker`，使用 `configs/fastest.env` 的 544×544 PyTorch CUDA Graph / FP16 流水线；额外依赖见 `requirements-fast.txt`，权重为 `weights/baseline.pth`。普通 PyTorch 基线入口仍为 `supership/generate_submission.py`。
+- 默认入口为 `bash run.sh --worker`，使用 `configs/fastest.env` 的 544×544 独立 TensorRT / FP16 流水线（CUDA Graph）；额外依赖见 `requirements-fast.txt`，权重为 `weights/baseline.pth`，引擎为 `weights/supership-544.engine`。普通 PyTorch 基线入口仍为 `supership/generate_submission.py`。
 
 ## 验证结果
 

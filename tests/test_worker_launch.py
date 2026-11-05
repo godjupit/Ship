@@ -63,5 +63,5 @@ def test_default_launcher_selects_verified_fastest_and_preserves_overrides(tmp_p
     worker, config = json.loads(result.stdout)
     assert worker == ('supership/trt_worker.py' if entrypoint == 'run.sh'
                       else 'supership/benchmark_submission.py')
-    assert config == dict(PIPELINE='fast', INPUT_SIZE='512', NUM_WORKERS=workers,
+    assert config == dict(PIPELINE='fast', INPUT_SIZE='544', NUM_WORKERS=workers,
                           THREADED_JSON='1', POST_TOP_QUERIES='100', INFERENCE_IMPORTS='1') | overrides
