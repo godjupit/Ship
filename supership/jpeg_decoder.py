@@ -1,5 +1,8 @@
 """Reuse TurboJPEG handles and decode directly into bounded pinned RGB/YUV slots."""
 import ctypes as c
+import hashlib
+import json
+import os
 from pathlib import Path
 import threading
 
@@ -35,7 +38,14 @@ class JPEGDecoder:
     def __init__(self, fallback, mode):
         import turbojpeg
 
-        library = next((Path(turbojpeg.__file__).parent / 'turbojpeg.libs').glob('libturbojpeg*.so*'))
+        selected = os.environ.get('TURBOJPEG_LIBRARY', 'bundled')
+        if selected == 'bundled':
+            library = next((Path(turbojpeg.__file__).parent / 'turbojpeg.libs').glob('libturbojpeg*.so*'))
+        else:
+            library = Path(selected).resolve()
+            metadata = json.loads(Path(str(library) + '.json').read_text())
+            if metadata.get('library_sha256') != hashlib.sha256(library.read_bytes()).hexdigest():
+                raise ValueError('JPEG library checksum mismatch; rebuild the decoder')
         self.lib = c.CDLL(str(library))
         self.lib.tjInitDecompress.restype = c.c_void_p
         self.lib.tjDestroy.argtypes = [c.c_void_p]

@@ -1,6 +1,6 @@
 # 推理与实验脚本
 
-本分支 `optimize/throughput-4300` 优先优化 4,300 张吞吐。CPU直接YUV + GPU融合颜色转换正式入口五轮中位数2.483920秒，同轮OpenCV RGB对照2.627888秒，降低5.48%（四轮更快）。200张候选中位数0.161731秒，冻结分支仍保留旧版0.161119秒。配置、逐轮时间、慢因和观察记录在主工作目录的 `实验.md`。
+本分支 `optimize/throughput-4300` 优先优化4,300张吞吐。最新为CPU YUV + GPU融合颜色/缩放，加9bit Huffman查表与PGO解码库。五轮正式入口中位数2.363127秒，同轮旧库2.574512秒（快8.21%，五轮均更快）；200张为0.154298秒，同轮旧200分支0.164358秒。输出与前一YUV方案一致。实验记录在主工作目录 `实验.md`。
 
 所有命令从仓库根目录执行，先激活环境：
 
@@ -18,10 +18,16 @@ source activate_env.sh
 python scripts/build_tensorrt.py --side 544 --output weights/supership-544.engine
 python scripts/build_trt_kernels.py
 python scripts/build_trt_kernels.py --source trt_yuv
+# Source checkout must be unmodified at this exact revision; NASM is required.
+git clone https://github.com/libjpeg-turbo/libjpeg-turbo.git .local-tools/libjpeg-source
+git -C .local-tools/libjpeg-source checkout 6c87537f60941f3c265c339fe60d1e31d2a42ccf
+python scripts/build_jpeg_decoder.py --source .local-tools/libjpeg-source
 bash benchmark_reference.sh
 ```
 
 构建仅使用原始权重和合成输入。离线部署需携带 `weights/baseline.pth`、`weights/supership-544.engine`、`weights/trt_yuv.ptx` 及引擎/PTX同名 `.json` 校验文件。运行时不调用编译器、不访问网络；检查引擎、权重、PTX、CUDA 源码校验和、GPU、TensorRT 版本和输入形状。改变输入尺寸、batch 或查询数必须重新构建引擎。`TRT_ENGINE`、`TRT_KERNELS` 可覆盖产物路径。
+
+JPEG运行库另需携带 `weights/libturbojpeg-pgo.so`、同名`.json`、`.LICENSE.md`和`.README.ijg`。PGO构建只读取2405张公开训练图，不使用评测图；需要GCC/G++、CMake和NASM。构建目录必须是新目录（`--work-dir`），详情在目录内`build.log`；不要与性能测试同时编译。默认针对Zen2/EPYC7402，其他CPU需确认指令兼容并重建复测。推理不需要训练集、源码、编译器或PGO数据。`TURBOJPEG_LIBRARY=bundled`切回原wheel解码器；设置其他路径时必须提供同名SHA256清单。
 
 所有评测数据在 READY 后读取。输入和输出使用有界 pinned 缓冲区；事件分别保护 H2D 输入复用和 D2H 输出读取。CUDA Graph 包含缩放、归一化、推理和 sigmoid；CPU 线程完成 top-k、坐标换算和 JSON 序列化。尾批补零，只写出真实图像。全部任务完成、输出 fsync 并关闭后才退出。独立运行时使用线程化 JSON，`STANDALONE_DECODER=yuv` 为默认；`opencv`/`rgb` 可用于RGB对照；原 PyTorch 路径的算子开关不适用于它。
 

@@ -1,9 +1,11 @@
 """Direct JPEG destinations, fallback formats, and mixed RGB/YUV CUDA inputs."""
 import ctypes
+import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -16,6 +18,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class JPEGDecoderChecks(unittest.TestCase):
+    def test_external_library_checksum_is_checked_before_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'decoder.so'
+            path.write_bytes(b'invalid library')
+            Path(str(path) + '.json').write_text(json.dumps(dict(library_sha256='bad')))
+            with patch.dict(os.environ, {'TURBOJPEG_LIBRARY': str(path)}):
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    JPEGDecoder(load_image, 'yuv')
+
     def test_header_parser_stops_before_entropy_data(self):
         app0 = b'\xff\xd8\xff\xe0\x00\x04AB'
         self.assertFalse(has_app1(app0 + b'\xff\xdaExif\x00\x00\xff\xe1'))
